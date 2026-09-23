@@ -27,10 +27,19 @@ def _init() -> sessionmaker:
             "DATABASE_URL is not set — copy engine/.env.example to engine/.env "
             "and paste the Supabase pooler connection string."
         )
+    # We depend on psycopg 3, so the URL must use the postgresql+psycopg:// scheme.
+    # Normalize the common Supabase forms (postgres://, postgresql://) onto it.
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
+        url = url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-    _engine = create_engine(url, pool_pre_ping=True, future=True)
+    _engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        future=True,
+        connect_args={"connect_timeout": 10},
+    )
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     return _SessionLocal
 
