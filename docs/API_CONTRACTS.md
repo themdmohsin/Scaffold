@@ -85,16 +85,17 @@ GitHub push/PR receiver. Signature-verified with `GITHUB_WEBHOOK_SECRET` (HMAC-S
 ```
 The ONLY route that calls an LLM for a user-facing answer (via LiteLLM, `SCAFFOLD_TEAM_LLM_KEY`, in `services/reasoning.py` only). *(Route frozen Day 1; implemented Day 3.)*
 
-## MCP tool names (`engine/app/mcp_server.py` — Day 2)
-The OpenCode plugin calls these verbatim — do not rename:
+## MCP server (Day 2 — LIVE at `/mcp`, streamable HTTP)
+The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention.
 ```
-get_project_context()
-get_api_contract(route: str)
-get_active_tasks()
-get_recent_decisions()
-report_change(diff_summary: str, files_changed: list[str])
-create_task(title: str, owner_id: str | None, due_at: str | None)
+get_project_context(project_id?)                                    → context object (same shape as GET /context)
+get_api_contract(route: str, project_id?)                           → { found, method, request_schema, response_schema } | { found: false }
+get_active_tasks(project_id?)                                       → { tasks: [...], count }   (non-done, oldest first)
+get_recent_decisions(limit? = 5, project_id?)                       → { decisions: [...], count }
+report_change(diff_summary: str, files_changed: list[str], project_id?) → { ok, event_id }   (writes change_reported event)
+create_task(title: str, owner_id? = null, due_at? = null, project_id?)  → { id, title, status }  (writes task_created event)
 ```
+Wire into any MCP client: endpoint `http://<engine>/mcp` (streamable HTTP).
 
 ## Environment variables (exact names — `.env.example` mirrors these)
 
@@ -138,3 +139,4 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 ## Changelog (append-only after Day 1)
 
 - 2026-09-23 — Day 1: routes, MCP tool names, env vars frozen per build plan §1. Day 1 additions: `POST /projects`, `DATABASE_URL` (engine), `SCAFFOLD_ENGINE_URL` (plugin). Implemented on Day 1: `/health`, `POST /projects`, `/context`, tasks CRUD. Deferred to Day 2: decisions, contracts, webhook. Day 3: `/reason`. Plugin hook API section appended from live docs verification.
+- 2026-09-24 — Day 2: `POST /projects/:id/github-webhook` IMPLEMENTED (HMAC-SHA256 verified, push only; ping answered; fetches diffs via GitHub REST, parses deterministically via `diff_parser.py`, writes commits + api_contracts + events). Decisions + contracts GET/POST routes IMPLEMENTED (plain CRUD per frozen shapes). MCP server LIVE at `/mcp` — all 6 tools on real Postgres; each takes optional `project_id` (falls back to `SCAFFOLD_DEFAULT_PROJECT_ID`); list tools return object-shaped results. New env var: `SCAFFOLD_DEFAULT_PROJECT_ID` (engine, optional).

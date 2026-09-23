@@ -26,8 +26,8 @@ CONTEXT_CONTRACT = {
 }
 
 
-@router.get("/projects/{project_id}/context")
-def get_context(project_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def build_context(db: Session, project_id: uuid.UUID) -> dict:
+    """Assemble the always-on summary. Shared by the HTTP route and the MCP server."""
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="project not found")
@@ -74,3 +74,8 @@ def get_context(project_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
         "relevant_contracts": [], # Day 3: retrieval.py fills this
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/projects/{project_id}/context")
+def get_context(project_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    return build_context(db, project_id)

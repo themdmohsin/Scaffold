@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     scaffold_team_llm_key: str = ""
     github_webhook_secret: str = ""
     github_token: str = ""
+    # Optional: default project for MCP tools when project_id is omitted (demo convention).
+    scaffold_default_project_id: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
