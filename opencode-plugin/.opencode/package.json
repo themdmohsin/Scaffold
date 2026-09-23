@@ -1,0 +1,8 @@
+{
+  "name": "scaffold-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest"
+  }
+}
