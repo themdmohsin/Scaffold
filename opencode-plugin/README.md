@@ -27,4 +27,4 @@ Day 4 wires the real engine calls (context injection + change reporting).
 
 ## Pending (tracked in docs/HANDOFF.md)
 
-- Identity rename: binary name, npm package names, config paths (`~/.config/opencode`), TTY graphic glyphs (`packages/tui/src/logo.ts`) — deferred deliberately.
+- Identity rename: binary name, npm package names, config paths (`~/.config/opencode`) — deferred deliberately. Visible rebrand is complete (CLI banner, terminal titles, TUI home logo).
