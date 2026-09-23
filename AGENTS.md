@@ -86,8 +86,18 @@ VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_ENGINE_URL
 ```
 # engine
 cd engine && pip install -r requirements.txt && uvicorn app.main:app --reload
+# engine smoke test (no server needed)
+cd engine && python -c "from starlette.testclient import TestClient; from app.main import app; print(TestClient(app).get('/health').json())"
+# engine seed (requires engine/.env with DATABASE_URL + schema applied)
+cd engine && python -m app.scripts.seed
 
 # dashboard
 cd dashboard && npm install && npm run dev
+# dashboard typecheck + production build
+cd dashboard && npm run build
+
+# opencode fork (the Scaffold client) — run from source
+cd opencode-plugin/opencode && bun install --ignore-scripts
+bun run --cwd packages/opencode src/index.ts --version   # -> local
 ```
-(Update this section the first time real test commands exist — don't leave it stale.)
+(No automated test suite yet — engine is smoke-tested via TestClient, dashboard via `npm run build`. Update this section when real tests land.)
