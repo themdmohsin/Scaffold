@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Decision, Event, Project, User
 from app.db.session import get_db
+from app.services import retrieval
 
 router = APIRouter(prefix="/projects/{project_id}/decisions", tags=["decisions"])
 
@@ -58,6 +59,7 @@ def create_decision(
         reasoning=body.reasoning,
         made_by=body.made_by,
     )
+    retrieval.embed_decision_row(d)  # Day 3 pgvector; fail open -> embedding null
     db.add(d)
     db.flush()
     db.add(

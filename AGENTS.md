@@ -90,6 +90,8 @@ cd engine && pip install -r requirements.txt && uvicorn app.main:app --reload
 cd engine && python -c "from starlette.testclient import TestClient; from app.main import app; print(TestClient(app).get('/health').json())"
 # engine seed (requires engine/.env with DATABASE_URL + schema applied)
 cd engine && python -m app.scripts.seed
+# engine backfill embeddings (requires SCAFFOLD_TEAM_LLM_KEY; idempotent)
+cd engine && python -m app.scripts.backfill_embeddings
 
 # dashboard
 cd dashboard && npm install && npm run dev

@@ -10,7 +10,7 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 - All timestamps are `TIMESTAMPTZ` defaulting to `now()`.
 - `tasks.status` is constrained to `'todo' | 'in_progress' | 'done'` (default `'todo'`).
 - Free-text summary fields (`commits.summary`, `events.payload`) hold derived data only — never raw source file contents (repo rule #4).
-- Embeddings (`VECTOR(1536)`) are added to `decisions` and `api_contracts` on Day 3, when retrieval is built — not part of the Day 1 freeze.
+- Embeddings (`VECTOR(1536)`) were added to `decisions` and `api_contracts` on Day 3 (see changelog). Nullable; the engine auto-applies `engine/app/db/migrate_day3.sql` (idempotent) at startup.
 
 ## Tables
 
@@ -57,6 +57,7 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | reasoning | TEXT | why it was made |
 | made_by | UUID → users(id) | |
 | created_at | TIMESTAMPTZ | default `now()` |
+| embedding | VECTOR(1536) | Day 3 addition — nullable; pgvector cosine retrieval |
 
 ### decision_affects_tasks
 | column | type | notes |
@@ -75,6 +76,7 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | response_schema | JSONB | |
 | created_by_task_id | UUID → tasks(id) | |
 | created_at | TIMESTAMPTZ | default `now()` |
+| embedding | VECTOR(1536) | Day 3 addition — nullable; pgvector cosine retrieval |
 
 ### commits
 | column | type | notes |
@@ -118,8 +120,14 @@ CREATE INDEX idx_contracts_project ON api_contracts(project_id, method, route);
 CREATE INDEX idx_commits_project   ON commits(project_id, sha);
 CREATE INDEX idx_events_project    ON events(project_id, created_at);
 CREATE INDEX idx_blockers_project  ON blockers(project_id) WHERE resolved = false;
+
+-- Day 3 additions (pgvector cosine search + realtime)
+CREATE INDEX idx_decisions_embedding ON decisions USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_contracts_embedding ON api_contracts USING hnsw (embedding vector_cosine_ops);
+-- tasks, decisions, events added to the supabase_realtime publication (migrate_day3.sql)
 ```
 
 ## Changelog (append-only after Day 1)
 
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
+- 2026-09-24 — Day 3: additive only — nullable `embedding VECTOR(1536)` on `decisions` + `api_contracts`, two HNSW cosine indexes, `tasks`/`decisions`/`events` added to the `supabase_realtime` publication. Applied by `engine/app/db/migrate_day3.sql` (auto at engine startup, idempotent).

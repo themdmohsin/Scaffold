@@ -6,6 +6,7 @@ Frozen Day 1 (2026-09-23). Do not rename columns; docs/SCHEMA.md is the contract
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -86,6 +87,8 @@ class Decision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Day 3 (pgvector): embedding of `text`, 1536 dims — see migrate_day3.sql.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
 
 
 class DecisionAffectsTask(Base):
@@ -116,6 +119,8 @@ class ApiContract(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Day 3 (pgvector): embedding of "METHOD /route", 1536 dims — migrate_day3.sql.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
 
 
 class Commit(Base):

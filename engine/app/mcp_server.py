@@ -50,7 +50,7 @@ def _iso(dt: datetime | None) -> str | None:
 
 @mcp.tool()
 def get_project_context(project_id: str | None = None) -> dict:
-    """Always-on project summary: goal, task counts, active tasks. Attach before coding."""
+    """Always-on project summary: goal, task counts, active tasks, recent decisions, contracts. Attach before coding."""
     db = _db()
     try:
         return build_context(db, _resolve_project_id(project_id))

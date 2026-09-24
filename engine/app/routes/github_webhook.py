@@ -4,8 +4,8 @@ Push events only, for now. Flow (master doc §6):
   verify HMAC → fetch commit diffs from GitHub REST → parse DIFF (deterministic)
   → write commits + api_contracts + events.
 
-The diff is the source of truth. The LLM one-liner summary (commits.summary)
-lands Day 3 with reasoning.py; the column stays null until then.
+The diff is the source of truth. The LLM one-liner summary (commits.summary) is
+phrased by reasoning.py (Day 3) and fails open — null when the provider is down.
 """
 
 import hashlib
@@ -21,6 +21,7 @@ from app.config import settings
 from app.db.models import ApiContract, Commit, Event, Project
 from app.db.session import get_db
 from app.services.diff_parser import parse_diff
+from app.services import reasoning, retrieval
 
 router = APIRouter(tags=["webhook"])
 
@@ -126,6 +127,15 @@ async def github_webhook(
 
         summary = parse_diff(patch_text)  # deterministic — repo rule #2
 
+        llm_summary = None
+        try:
+            llm_summary = reasoning.summarize_diff(
+                message, files, summary.routes_added,
+                summary.dependencies_added, summary.env_keys_added,
+            )
+        except Exception:  # fail open: commits.summary stays null
+            llm_summary = None
+
         db.add(
             Commit(
                 project_id=pid,
@@ -133,19 +143,19 @@ async def github_webhook(
                 message=message,
                 author=author,
                 files_changed=files,
-                summary=None,  # Day 3: LLM one-liner via reasoning.py
+                summary=llm_summary,
             )
         )
         for route_info in summary.routes_added:
-            db.add(
-                ApiContract(
-                    project_id=pid,
-                    route=route_info["route"],
-                    method=route_info["method"],
-                    request_schema=None,
-                    response_schema=None,
-                )
+            contract = ApiContract(
+                project_id=pid,
+                route=route_info["route"],
+                method=route_info["method"],
+                request_schema=None,
+                response_schema=None,
             )
+            retrieval.embed_contract_row(contract)  # fail open -> embedding null
+            db.add(contract)
         db.add(
             Event(
                 project_id=pid,

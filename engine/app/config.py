@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     github_token: str = ""
     # Optional: default project for MCP tools when project_id is omitted (demo convention).
     scaffold_default_project_id: str = ""
+    # Optional Day 3 overrides — defaults: gemini/gemini-2.5-flash + gemini/gemini-embedding-001
+    scaffold_llm_model: str = ""
+    scaffold_embed_model: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

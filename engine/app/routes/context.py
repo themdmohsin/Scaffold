@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Project, Task
 from app.db.session import get_db
+from app.services import retrieval
 
 router = APIRouter(tags=["context"])
 
@@ -70,8 +71,14 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
             }
             for t in active
         ],
-        "recent_decisions": [],   # Day 3: retrieval.py fills this
-        "relevant_contracts": [], # Day 3: retrieval.py fills this
+        "recent_decisions": [
+            {"id": d["id"], "text": d["text"], "created_at": d["created_at"]}
+            for d in retrieval.recent_decisions(db, project_id, 5)
+        ],
+        "relevant_contracts": [
+            {"route": c["route"], "method": c["method"]}
+            for c in retrieval.recent_contracts(db, project_id, 5)
+        ],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

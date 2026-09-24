@@ -1,15 +1,90 @@
 # HANDOFF
 
-## Day 2 — 2026-09-24 — Mohammed (solo)
-Built: **Ingestion + MCP, verified by a 30-check suite (`python -m tests.test_day2`, all green).** `POST /projects/:id/github-webhook` — HMAC-SHA256 verification (fails closed without `GITHUB_WEBHOOK_SECRET`; 403/400 on bad/missing sig), ping answered, push events fetch real diffs via GitHub REST, `diff_parser.py` extracts routes/dependencies/env keys deterministically (repo rule #2), writes `commits` + `api_contracts` + `commit_ingested` events. Decisions + contracts routes implemented per frozen shapes (with `decision_logged` / `contract_registered` events). `engine/app/mcp_server.py` LIVE at `/mcp` (streamable HTTP) — all 6 frozen tool names on real Postgres; every tool takes optional `project_id`, falling back to `SCAFFOLD_DEFAULT_PROJECT_ID`; MCP tools tested through the real protocol (initialize → tools/list → tools/call) against a real uvicorn server.
-Env vars added: `SCAFFOLD_DEFAULT_PROJECT_ID` (engine, optional — default project for MCP tools when `project_id` omitted).
-Still broken / not done: Webhook verified against stubbed GitHub only — needs ONE real test push (create webhook in GitHub repo settings → payload URL `<engine>/projects/<id>/github-webhook`, content-type JSON, secret = `GITHUB_WEBHOOK_SECRET`, push events). `commits.summary` (LLM one-liner) is null until Day 3. `context.recent_decisions`/`relevant_contracts` still empty until Day 3 retrieval wires them (data is in the DB). The fork's plugin doesn't call the engine yet (Day 4). MCP v2 SDK note: `FastMCP` renamed `MCPServer`; list-type tools return object-shaped results (`{tasks: [...], count}`).
-Next pair should start with: Day 3 — `retrieval.py` (fill the context's decisions/contracts sections; add pgvector `embedding` columns to decisions/api_contracts + backfill) and `reasoning.py` (LiteLLM on `SCAFFOLD_TEAM_LLM_KEY` behind `/projects/:id/reason`), plus Supabase Realtime on the dashboard; and do the one real webhook test push.
+## Current State — 2026-09-24 — Mohammed
+
+Scaffold is currently through **Day 3: reasoning + retrieval + realtime groundwork**, with the Day 2 and Day 3 automated suites passing and the major real-world integration tests completed.
+
+The Day 3 work was implemented locally and verified before handoff. The changes are currently **not yet committed/pushed to GitHub**.
 
 ---
 
-## Day 1 — 2026-09-23 — Mohammed (solo, both tracks)
-Built: Engine (FastAPI) with `/health`, `POST /projects`, `GET /projects/:id/context`, and full tasks CRUD — **verified end-to-end against live Supabase** (seed project `fdcb7511-434b-40c1-a391-0cd45e2150a5`, user `7ce9a46f-...`; create/list/patch + `events` log + 400/404/422 validation all green). Schema applied via SQL editor (10 tables). OpenCode fork source vendored at `opencode-plugin/opencode/`, runs from source via bun (`bun run --cwd packages/opencode src/index.ts`); visible rebrand complete — SCAFFOLD banner (`packages/opencode/src/cli/ui.ts`), terminal titles ("Scaffold" / "SC | <session>") in `packages/tui/src/app.tsx`, TUI home logo (`packages/tui/src/logo.ts`). Plugin skeleton at `opencode-plugin/.opencode/plugins/scaffold.ts` (log-only hooks, installed globally so it loads in any project). Dashboard (Vite+React+TS) builds clean with project-join screen. Frozen: `docs/SCHEMA.md`, `docs/API_CONTRACTS.md` (incl. verified OpenCode hook API). All pushed to github.com/themdmohsin/Scaffold `main`.
-Env vars added: `DATABASE_URL` (engine — Supabase pooler string; Day 1 addition to the frozen list), `SCAFFOLD_ENGINE_URL` (opencode-plugin — Day 1 addition). All documented in `docs/API_CONTRACTS.md`.
-Still broken / not done: **Rotate the Supabase DB password** (Settings → Database → Reset) — it leaked into a terminal transcript on Day 1; then update `DATABASE_URL` in `engine/.env`. Engine URLs must use `postgresql+psycopg://` or plain `postgresql://` — `session.py` normalizes both (psycopg 3 driver). `bun install` needs `--ignore-scripts` on Windows (tree-sitter-powershell node-gyp fails; lazy feature, safe to skip). Fork identity rename deferred: binary/package names and `~/.config/opencode` paths still say opencode (visible branding fully rebranded). Deploy deferred to Day 2 by decision.
-Next pair should start with: Day 2 scope — `/projects/:id/github-webhook` with HMAC verification + `diff_parser.py` (regex extraction of routes/dependencies/env keys), and `mcp_server.py` exposing the 6 frozen tool names against real Postgres; keep the engine's deterministic-vs-LLM split (repo rules 2-3).
+## Day 3 — Reasoning + Retrieval + Realtime
+
+### Built
+
+Implemented the Day 3 reasoning/context layer:
+
+- `engine/app/services/retrieval.py`
+  - pgvector cosine similarity retrieval over `decisions` and `api_contracts`
+  - deterministic keyword/recency fallback when embedding/LLM provider is unavailable
+  - project-scoped retrieval
+
+- `engine/app/services/reasoning.py`
+  - the only file responsible for LLM calls
+  - LiteLLM → Google Gemini
+  - chat model currently:
+    - `gemini/gemini-3.6-flash`
+  - embedding model:
+    - `gemini/gemini-embedding-001`
+  - embeddings use 1536 dimensions
+  - commit summaries are generated here
+  - `/reason` responses are defensively parsed into the frozen response shape
+
+- `POST /projects/:id/reason`
+  - builds project context from the engine
+  - retrieves relevant decisions/contracts
+  - sends a bounded context block to the LLM
+  - returns:
+    ```json
+    {
+      "answer": "...",
+      "suggested_tasks": [...]
+    }
+    ```
+
+- `engine/app/db/migrate_day3.sql`
+  - enables pgvector
+  - adds nullable `embedding VECTOR(1536)` columns
+  - creates HNSW indexes
+  - adds `tasks`, `decisions`, and `events` to the Supabase Realtime publication
+  - migration is idempotent and auto-applies at engine startup
+
+- `engine/app/scripts/backfill_embeddings.py`
+  - idempotent embedding backfill
+  - supports `--force` for re-embedding
+
+- Context endpoint/MCP context now includes real:
+  - recent decisions
+  - relevant contracts
+
+- `commits.summary`
+  - generated by the LLM
+  - fails open to `null` if the provider is unavailable
+
+### Dashboard
+
+Day 3 dashboard work includes:
+
+- task board
+- create tasks
+- click-to-advance task status
+- decision log
+- API contracts list
+- "Ask Scaffold" panel
+- one-click creation of suggested tasks from `/reason`
+- Supabase Realtime subscriptions for:
+  - tasks
+  - decisions
+  - events
+
+Realtime is designed to turn off gracefully when the required `VITE_SUPABASE_*` variables are not configured.
+
+---
+
+## Day 3 Verification
+
+Automated tests:
+
+```text
+python -m tests.test_day3
+29/29 green

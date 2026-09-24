@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApiContract, Event, Project, Task
 from app.db.session import get_db
+from app.services import retrieval
 
 router = APIRouter(prefix="/projects/{project_id}/contracts", tags=["contracts"])
 
@@ -68,6 +69,7 @@ def create_contract(
         response_schema=body.response_schema,
         created_by_task_id=body.created_by_task_id,
     )
+    retrieval.embed_contract_row(c)  # Day 3 pgvector; fail open -> embedding null
     db.add(c)
     db.flush()
     db.add(

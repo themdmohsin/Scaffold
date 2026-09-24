@@ -14,9 +14,9 @@ body {
 }
 
 .app {
-  max-width: 640px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: 48px 24px;
+  padding: 40px 24px;
 }
 
 h1 {
@@ -24,9 +24,17 @@ h1 {
   margin: 0 0 4px;
 }
 
+h3 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8b949e;
+  margin: 0 0 10px;
+}
+
 .tagline {
   color: #8b949e;
-  margin: 0 0 32px;
+  margin: 0 0 28px;
 }
 
 .form {
@@ -34,17 +42,24 @@ h1 {
   gap: 8px;
 }
 
-input {
-  flex: 1;
+input,
+textarea {
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid #30363d;
   background: #161b22;
   color: inherit;
   font-size: 14px;
+  font-family: inherit;
 }
 
-input:focus {
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+input:focus,
+textarea:focus {
   outline: 1px solid #4493f8;
 }
 
@@ -58,8 +73,13 @@ button {
   cursor: pointer;
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background: #30363d;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .status {
@@ -72,11 +92,231 @@ button:hover {
   color: #f85149;
 }
 
-.status pre {
+/* project header */
+.project-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.project-header h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.goal {
+  color: #8b949e;
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.counts {
+  color: #8b949e;
+  font-size: 12px;
+  margin: 0;
+}
+
+.live {
+  font-size: 11px;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.live-on {
+  color: #3fb950;
+}
+
+.live-off {
+  color: #8b949e;
+}
+
+/* task board */
+.board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.column h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill {
+  background: #21262d;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.add-task {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.add-task input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+.add-task button {
+  padding: 4px 11px;
+  font-size: 15px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  background: #161b22;
+}
+
+.card small {
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.card-in_progress {
+  border-color: #4493f8;
+}
+
+.card-done {
+  color: #8b949e;
+  text-decoration: line-through;
+}
+
+/* ask scaffold */
+.ask {
+  margin-bottom: 28px;
+}
+
+.ask-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.ask-row button {
+  white-space: nowrap;
+}
+
+.ask-error {
+  color: #f85149;
+  font-size: 13px;
+}
+
+.answer {
+  margin-top: 12px;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
-  padding: 12px;
-  overflow-x: auto;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.answer p {
+  margin: 0 0 8px;
+}
+
+.suggested {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.suggested button {
+  padding: 5px 10px;
   font-size: 12px;
+  border-color: #4493f8;
+  color: #4493f8;
+}
+
+/* panels */
+.panel {
+  margin-bottom: 28px;
+}
+
+.empty {
+  color: #8b949e;
+  font-size: 13px;
+}
+
+.decision {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.decision p {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.decision small {
+  color: #8b949e;
+  display: block;
+  font-size: 12px;
+}
+
+.decision .when {
+  margin-top: 2px;
+  opacity: 0.7;
+}
+
+.contracts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.contract {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+}
+
+.method {
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.m-post {
+  color: #3fb950;
+}
+
+.m-get {
+  color: #4493f8;
+}
+
+.m-patch {
+  color: #d29922;
+}
+
+.m-delete {
+  color: #f85149;
+}
+
+@media (max-width: 720px) {
+  .board {
+    grid-template-columns: 1fr;
+  }
 }

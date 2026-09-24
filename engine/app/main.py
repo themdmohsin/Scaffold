@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.routing import Route
 
 from app import mcp_server
-from app.routes import context, contracts, decisions, github_webhook, projects, tasks
+from app.routes import context, contracts, decisions, github_webhook, projects, reason, tasks
 
 
 class _McpPathFix:
@@ -54,6 +54,7 @@ app.include_router(tasks.router)
 app.include_router(decisions.router)
 app.include_router(contracts.router)
 app.include_router(github_webhook.router)
+app.include_router(reason.router)
 # MCP: exact Route for POST/DELETE /mcp (avoids Starlette's /mcp -> /mcp/ 307),
 # plus the mount for sub-paths. Both go through the path-fixing wrapper.
 _mcp_wrapped = _McpPathFix(mcp_server.mcp_app)
