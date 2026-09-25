@@ -2,6 +2,11 @@
 
 POST is what the plugin's "after" hook calls to register a new contract
 (master doc §4 step 7) and what the webhook uses implicitly via diff parsing.
+
+Day 4 Part B: POST also runs deterministic conflict detection (rule #3) against
+the project's registered contracts BEFORE inserting, recording conflict_flagged
+events + blockers and scheduling the auto-GitHub-issue on a hit. Registration
+still succeeds (201) — detection is a safety net, not a blocker.
 """
 
 import uuid
@@ -13,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApiContract, Event, Project, Task
 from app.db.session import get_db
-from app.services import retrieval
+from app.services import conflict_service, retrieval
+from app.services.conflict_recorder import record_conflicts
 
 router = APIRouter(prefix="/projects/{project_id}/contracts", tags=["contracts"])
 
@@ -61,6 +67,29 @@ def create_contract(
         task = db.get(Task, body.created_by_task_id)
         if not task or task.project_id != project_id:
             raise HTTPException(status_code=400, detail="created_by_task_id is not a task on this project")
+
+    # Day 4 Part B — deterministic conflict detection before the write.
+    findings = conflict_service.detect_contract_conflicts(
+        [
+            {
+                "route": body.route,
+                "method": body.method.upper(),
+                "request_schema": body.request_schema,
+                "response_schema": body.response_schema,
+            }
+        ],
+        [
+            {
+                "route": r.route,
+                "method": r.method,
+                "request_schema": r.request_schema,
+                "response_schema": r.response_schema,
+            }
+            for r in db.scalars(select(ApiContract).where(ApiContract.project_id == project_id)).all()
+        ],
+    )
+    conflict_summary = record_conflicts(db, project_id, findings, incoming_source="contracts API")
+
     c = ApiContract(
         project_id=project_id,
         route=body.route,
@@ -81,4 +110,7 @@ def create_contract(
     )
     db.commit()
     db.refresh(c)
-    return _out(c)
+    out = _out(c)
+    if findings:  # additive response key (changelog-noted) so callers see the hit
+        out["conflicts"] = conflict_summary
+    return out
