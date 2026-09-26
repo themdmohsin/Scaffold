@@ -1,24 +1,25 @@
 # HANDOFF
 
-## Current State — 2026-09-26 — Prabhanjan (Day 5 — Person A done, Person B prepared)
+## Current State — 2026-09-26 — Prabhanjan (Day 5 complete — both persons, GO verdict recorded)
 
-Day 5 Person A is built and offline-verified (44/44 pure checks): deterministic availability
+Day 5 Person A is built and verified on hardware: deterministic availability
 roster (SQL GROUP BY open tasks + hours-until-deadline — never LLM-guessed) fed into `/reason`,
 deterministic post-validation of every suggested assignment (unknown owners cleared, past or
 unparseable due dates cleared, beyond-deadline dates clamped; response shape frozen, additive
 `assignment_notes`), and the invite/join flow (`POST /projects/{id}/invite`,
 `POST /projects/join` — stateless signed codes, creates the project's `users` rows, no schema
-changes), hardened by two audit rounds (9 defects found and fixed, red-then-green with negative
-controls). Details in the Day 5 entry near the end of this file.
+changes). Six audit rounds across the repo fixed ~27 defects red-then-green; suites:
+test_day5 74/74, day2 31/31, day3 29/29, day4b 25/25, plugin 55/55, dashboard build ✓.
+Details in the Day 5 entry near the end of this file.
 
-Day 5 Person B is prepared as far as one machine allows: a static integration trace found and
-fixed a real demo-killing bug (the dashboard dropped `owner_id`/`due_at` when creating a task
-from a `/reason` suggestion), and `docs/day5-integration-runbook.md` makes the two-laptop pass
-copy-pasteable — including the honest note that the conflict demo's contract arrives via
-dashboard/API push, not automatically from the plugin's write. The literal two-laptop run and
-the §17 go/no-go still need hardware (see the runbook's checklist).
+Day 5 Person B's integration pass was executed as a single-host equivalent (no second laptop
+available): live engine + plugin MCP acceptance (3/3) + curl second client + a real browser
+driving the whole §17 flow — **GO** (residuals below). The pass caught the dashboard's
+dead-mutations bug (`pidRef` never assigned — every ask/add/move was a 404) and the
+conflict-moment visibility gap. `docs/day5-integration-runbook.md` stays copy-pasteable for a
+real two-laptop re-run if hardware ever appears.
 
-Verified on hardware (2026-09-26): a disposable local Postgres+pgvector container
+Earlier hardware verification (2026-09-26) on a disposable local Postgres+pgvector container
 (`scaffold-day5-pg`, port 5433) + a local `engine/.env` let every previously-skipped DB leg run
 for real — `test_day5` is now **68/68 including the route legs** (invite → join → idempotent
 re-join → roster load), `test_day2` **30/30**, `test_day4b` **25/25** against the same rig, and
