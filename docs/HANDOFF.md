@@ -1009,3 +1009,59 @@ git add HANDOFF.md
 git commit -m "docs: update handoff through day 3"
 git push origin main
 ````
+
+---
+
+## Day 4 — 2026-09-25 — Section A (OpenCode plugin hooks)
+
+Built: the plugin loop is wired. `opencode-plugin/.opencode/plugins/scaffold.ts` now speaks
+MCP (streamable HTTP JSON-RPC at `<SCAFFOLD_ENGINE_URL>/mcp`, initialize handshake + session
+id, JSON and SSE replies, 2.5s timeout, 60s backoff after repeated failures) and drives four
+hooks: `experimental.chat.system.transform` injects the bounded `get_project_context()` block
+(2400 chars, refreshed on every user message, 5 decisions / 5 contracts / 8 tasks);
+`tool.execute.before` finds `/api/...` routes inside `write`/`edit`/`apply_patch` arguments and
+pins `get_api_contract(route)` into the next request; `tool.execute.after` calls
+`report_change(diff_summary, files_changed)` built deterministically from the tool result's
+real additions/deletions; `experimental.session.compacting` keeps the block through
+compaction. Verified with `cd opencode-plugin && node tests/verify_plugin.ts` — 55/55 checks
+against a fake wire-faithful engine (including engine-down and timeout paths) — and
+`python opencode-plugin/tests/mcp_sdk_interop.py` — 17/17 against the *real* `mcp` SDK server
+using the engine's own mount code with fixture tools (no Postgres, no LLM), which proves the
+plugin's hand-rolled MCP client speaks the same wire format the engine serves. The plugin and its
+harnesses also typecheck strictly against the vendored `@opencode-ai/plugin` types
+(`cd opencode-plugin && npm install && npm run typecheck`) — the negative control was verified to
+fail, so that check is not vacuous. `python opencode-plugin/tests/acceptance_live.py` is the
+Day 4 acceptance runner: pointed at a live engine it prints the exact block an agent receives
+(`--self-test` proves the runner itself without an engine).
+
+A hardening pass over the plugin then fixed three real defects: a failed `get_project_context`
+fetch used to be cached as fresh-but-empty for the whole 20s TTL (which killed context injection
+*and* contract pinning until the next user message); session start logged one generic line
+whether the engine was unreachable or the project was simply unseeded (now distinct warns and
+toasts); and `write` summaries counted UTF-16 code units while labelling them "bytes" (now
+`Buffer.byteLength`, asserted against multibyte content). The caching fix was proven with a
+deliberate reintroduction of the old condition — the three new regression checks failed loudly
+under it and pass after the revert.
+
+A second pass made reporting durable: `report_change` payloads the engine cannot accept (it is
+down, or up but erroring per call) are parked in a bounded queue (max 50, kept 1h) and replayed
+oldest-first at the next session start or successful report — a write is never silently lost to a
+transient outage. The MCP client also re-handshakes once when the engine answers 404 for a stale
+session id (what a restarted engine does) and rejects any 2xx body that is not a JSON-RPC reply
+for the outstanding request. The replay behaviour was proven the same way: with the queue
+deliberately disabled the three new regression checks fail loudly, and pass after the revert.
+`verify_plugin.ts` is now 55 checks.
+
+Env vars added: none. The plugin deliberately sends no `project_id`; the engine applies
+`SCAFFOLD_DEFAULT_PROJECT_ID` (the convention already frozen on Day 2).
+
+Still broken / not done: not tested in a real OpenCode session against a real
+Postgres-backed engine — this machine has no `engine/.env`, no Supabase credentials and no bun,
+so the live acceptance runner and the interactive session below have never been executed for real. `report_change` only fires for file-writing tools; changes made by a shell
+command (a `git commit`, a formatter) are not reported. Contract pinning is lookup-only — it
+surfaces the conflict *to the agent* in the prompt, it does not block the write (that is
+Person B's conflict-prevention work). Day 4's own handoff requirement — the full loop across
+two separate machines — is still open.
+
+Next pair should start with: run the plugin in a real coding session on two laptops against a
+deployed engine, and watch whether Dev B's next prompt actually carries Dev A's change.
