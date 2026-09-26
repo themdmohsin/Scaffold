@@ -1,5 +1,119 @@
 # HANDOFF
 
+## Current State — 2026-09-26 — Prabhanjan (Day 5 — Person A done, Person B prepared)
+
+Day 5 Person A is built and offline-verified (44/44 pure checks): deterministic availability
+roster (SQL GROUP BY open tasks + hours-until-deadline — never LLM-guessed) fed into `/reason`,
+deterministic post-validation of every suggested assignment (unknown owners cleared, past or
+unparseable due dates cleared, beyond-deadline dates clamped; response shape frozen, additive
+`assignment_notes`), and the invite/join flow (`POST /projects/{id}/invite`,
+`POST /projects/join` — stateless signed codes, creates the project's `users` rows, no schema
+changes), hardened by two audit rounds (9 defects found and fixed, red-then-green with negative
+controls). Details in the Day 5 entry near the end of this file.
+
+Day 5 Person B is prepared as far as one machine allows: a static integration trace found and
+fixed a real demo-killing bug (the dashboard dropped `owner_id`/`due_at` when creating a task
+from a `/reason` suggestion), and `docs/day5-integration-runbook.md` makes the two-laptop pass
+copy-pasteable — including the honest note that the conflict demo's contract arrives via
+dashboard/API push, not automatically from the plugin's write. The literal two-laptop run and
+the §17 go/no-go still need hardware (see the runbook's checklist).
+
+Verified on hardware (2026-09-26): a disposable local Postgres+pgvector container
+(`scaffold-day5-pg`, port 5433) + a local `engine/.env` let every previously-skipped DB leg run
+for real — `test_day5` is now **68/68 including the route legs** (invite → join → idempotent
+re-join → roster load), `test_day2` **30/30**, `test_day4b` **25/25** against the same rig, and
+`/reason` without an LLM key degrades exactly as designed (503, fail-open). Hardware caught TWO
+real bugs the offline layer could never see: the idempotent-join edit had silently dropped
+`status_code=201`, so every NEW join returned 200 against the frozen contract (fixed; existing
+joins stay 200/`existing`), and with the real `SCAFFOLD_TEAM_LLM_KEY` the live chain
+(project → invite → join → roster → Gemini → validated suggestions) first returned zero tasks —
+Gemini 3's hidden thinking tokens count against `max_tokens`, so 800 truncated the JSON
+mid-string (raised to 2000; pinned by a `test_day5` source check). The live chain then **PASSED**:
+suggested tasks carried roster-valid owner_ids end-to-end (`python -m app.scripts.live_reason_check`
+reproduces it; transient Gemini 503s are retried). A fifth audit round (both persons, same day)
+closed two more live-surface defects before they could ship: a join `role` containing a newline
+would have forged its own line inside the LLM TEAM ROSTER block (the name had this fix; the role
+did not — roles are now whitespace-collapsed at the join boundary too), and duplicate suggested
+task titles survived the parser and collided on the dashboard (suggestion buttons are keyed and
+removed by title — the parser now dedupes case-insensitively). `test_day5` pins both by test.
+The same round found the demo-moment gap: conflicts were persisted (event + blocker + issue) but
+`GET /context` exposed neither and the dashboard had no section — `/context` now returns additive
+`blockers` (open, ≤10) and `recent_events` (≤8) keys, the dashboard renders open blockers, and
+MCP `get_project_context()` inherits both keys so agents see the conflict too (all pre-existing
+context keys byte-identical; pinned by DB-backed tests). The round also hardened the suite
+itself: the day5 teardown never deleted `blockers`, so one interrupted run used to poison every
+later run through the fixed project name (409 → crash-loop; teardown extended + fixed name kept
+for idempotent re-runs). The day2/day3/day4b teardowns leave their own `dayX-test-*` projects
+behind — harmless, but purge them off the demo rig after suite runs. Secret hygiene: the real
+keys briefly landed in the git-tracked `engine/.env.example` — moved to gitignored `engine/.env`
+before any commit.
+
+NO SECOND LAPTOP — single-host equivalent executed instead (2026-09-26): the two-laptop pass
+existed to prove multiple independent clients share one engine, so it was run on one machine
+with four real clients — (1) live uvicorn engine against the rig, (2) the plugin's real MCP
+acceptance runner over the wire (`tests/acceptance_live.py` → 3/3, 267-char block injected,
+zero warnings, after seeding the demo project + setting `SCAFFOLD_DEFAULT_PROJECT_ID`),
+(3) curl as laptop B (invite → join 201 → idempotent 200/`existing`), and (4) a REAL browser
+driving the dashboard end to end: join → live ask → Gemini suggestions → click → task lands
+ASSIGNED (owner = the seeded user) → conflict leg → blocker banner visible in the panel.
+The browser click caught one more real bug static review missed: `pidRef` was never assigned,
+so EVERY dashboard mutation (ask/suggest/add/move) POSTed to `/projects//…` → 404 while reads
+still worked — the UI looked alive with every button dead (fixed in `join()`/`leave()`, build ✓).
+**Verdict: GO for the single-host demo** — every §17 beat works end to end. Residual risks,
+known and accepted: Supabase realtime was off in rehearsal (`VITE_SUPABASE_*` unset; the demo
+relies on refetch-on-action, which is what was exercised), all clients share one machine/DB,
+Gemini free-tier 503 flaps need a re-click, and `GITHUB_TOKEN` unset locally means the
+issue-creation step is skipped (fail-open by design — file it with the token set on demo day).
+
+SIXTH audit round (whole repo, Day 1→5, 2026-09-26): two real defects fixed. (1) The GitHub
+webhook ingested pushes from ANY branch — the team's daily feature-branch pushes would have
+planted WIP routes as contracts and fired false conflicts; it now ingests only
+main/master (backwards compatible with payloads lacking `ref`), pinned by a new test_day2 check
+and proven live with a genuinely signed feature-branch push returning
+`{processed: [], skipped: {branch}}`. (2) A stray undeclared `GET /api/test/scaffold-v2` route
+violated the frozen-contract rule; removed. Re-verified after the fixes: day5 74/74, day2 31/31,
+day3 29/29, day4b 25/25, plugin 55/55 + typecheck, dashboard build ✓. HMAC verification,
+retrieval fallbacks, conflict detection, schema↔ORM parity and the plugin's fail-open guarantees
+all re-read and held.
+
+Day 5 Person A is built and offline-verified (38/38 pure checks): deterministic availability
+roster (SQL GROUP BY open tasks + hours-until-deadline — never LLM-guessed) fed into `/reason`,
+deterministic post-validation of every suggested assignment (unknown owners cleared, past or
+unparseable due dates cleared, beyond-deadline dates clamped; response shape frozen, additive
+`assignment_notes`), and the invite/join flow (`POST /projects/{id}/invite`,
+`POST /projects/join` — stateless signed codes, creates the project's `users` rows, no schema
+changes). Details in the Day 5 entry near the end of this file.
+
+Verified on real hardware (2026-09-26): the DB-backed route sections and the live-LLM
+assignment path both ran for real and pass (details above). Person B's Day 5 two-laptop
+integration pass is the remaining open Day 5 item.
+
+---
+
+## Current State — 2026-09-25 — Prabhanjan (Day 4 Part A — merged via PR #3)
+
+Day 4 is complete on **both halves**: Part A (this banner) and Part B (Mihika's banner below).
+
+**Day 4 Part A — OpenCode plugin hooks** (`opencode-plugin/.opencode/plugins/scaffold.ts`): the
+plugin speaks MCP to the engine at `<SCAFFOLD_ENGINE_URL>/mcp` (hand-rolled JSON-RPC client, no
+SDK) and wires the full agent loop — `get_project_context()` injected as a bounded 2400-char
+system block via `experimental.chat.system.transform`, `get_api_contract(route)` pinned from
+write-tool arguments via `tool.execute.before`, `report_change(diff_summary, files_changed)`
+built deterministically from real diff metadata via `tool.execute.after`, context kept across
+compaction. Reporting is durable: reports the engine refuses are parked (max 50, kept 1h) and
+replayed oldest-first when it recovers.
+
+Verified offline: `node tests/verify_plugin.ts` **55/55** against a wire-faithful fake engine,
+`python tests/mcp_sdk_interop.py` **17/17** against the *real* `mcp` SDK server,
+`python tests/acceptance_live.py --self-test` **4/4**, and strict `npm run typecheck` against
+the vendored plugin types. **Never run live on real hardware:** no real OpenCode session against
+the real Postgres-backed engine yet (no `engine/.env` on the dev machine) — that, and the
+full two-machine loop, remain the open Day 4 items.
+
+Full details: the "Day 4 — Section A" entry near the end of this file.
+
+---
+
 ## Current State — 2026-09-25 — Mihika (Day 4 Part B)
 
 Scaffold is now through **Day 4 Part B: deterministic conflict detection + auto-GitHub-issue** (engine side; Part A plugin hooks are the other half of Day 4).
@@ -868,20 +982,31 @@ Do not send the entire project database to every LLM request.
 Day 1 implementation        COMPLETE
 Day 2 implementation        COMPLETE
 Day 3 implementation        COMPLETE
+Day 4 Part A (plugin hooks) COMPLETE — offline-verified only
+Day 4 Part B (conflicts)    COMPLETE — engine side
 
 Day 2 tests                 30/30 PASS
 Day 3 tests                 29/29 PASS
+Day 4A plugin suite         55/55 PASS
+Day 4A real-SDK interop     17/17 PASS
+Day 4A acceptance self-test 4/4 PASS
+Day 4B suite                25/25 PASS
 Dashboard build             PASS
 Engine health               PASS
 Database migration          PASS
 Embedding backfill         PASS
 Real GitHub webhook         PASS
 Real /reason                PASS
+Live two-machine Day 4 loop OPEN
 ```
 
 ---
 
 # Day 4 — Next Milestone
+
+> **UPDATE 2026-09-25:** Day 4 is DONE — Part A (plugin hooks) and Part B (conflict detection)
+> are both merged to main. The next-person steps below are historical; see the Current State
+> banners at the top of this file and the Day 4 entries near the end.
 
 The next major milestone is **OpenCode Plugin Integration**.
 
@@ -1065,3 +1190,77 @@ two separate machines — is still open.
 
 Next pair should start with: run the plugin in a real coding session on two laptops against a
 deployed engine, and watch whether Dev B's next prompt actually carries Dev A's change.
+
+---
+
+## Day 5 — 2026-09-26 — Person A (task assignment + teammate invites)
+
+Built (offline-verified, `python -m tests.test_day5` — 33/33 pure checks):
+
+- `engine/app/services/availability.py` — the deterministic core, no LLM, no network:
+  `compute_roster` (open-task load per user, sorted by load then name, bounded at 10),
+  `hours_until`, `render_roster_block` (the TEAM ROSTER block listing verbatim user_ids),
+  `validate_assignments` (unknown owner_id -> null; past/unparseable due_at -> null;
+  due_at beyond the project deadline -> clamped; returns notes for every correction), and a thin
+  `roster(db, project_id)` DB wrapper using a real SQL GROUP BY.
+- `/reason` extended, shape frozen: the context block gains the TEAM ROSTER section; the system
+  prompt now permits owner_id/due_at but ONLY copied verbatim from the roster; every suggestion
+  is re-validated AFTER the LLM before it reaches the client. Additive `assignment_notes` key
+  appears only when something was corrected. Fail-open everywhere.
+- `engine/app/routes/invites.py` — `POST /projects/{id}/invite` -> `{invite_url, code,
+  expires_at_epoch}` and `POST /projects/join` `{code, name, role?}` -> 201 creates the
+  `users` row + `teammate_joined` event. Stateless HMAC-SHA256 codes
+  (`project_id.expiry.signature`, 7-day TTL) signed with the existing GITHUB_WEBHOOK_SECRET —
+  no invites table, no schema changes, no new env vars (503 if the secret is unset). This is
+  the first API that can create users; previously the two-laptop test needed manual SQL seeding.
+- `engine/tests/test_day5.py` — pure units for roster math, deadline math, roster rendering and
+  every validation rule, plus full invite-code tamper/expiry/malformation coverage; DB-backed
+  route sections (TestClient, Day 2/3/4b style) are included and SKIP loudly without
+  DATABASE_URL. Validation rules proven by negative control (validator disabled -> exactly the
+  5 validation checks fail -> reverted).
+- A self-audit pass then fixed four defects before they could ship: a naive (offset-less)
+  deadline crashed `hours_until`/`render_roster_block`/clamping with TypeError (all datetimes
+  now normalized through one `_as_utc` helper), the `compute_roster` docstring promised a
+  nonexistent `has_deadline_task` field, `roster()` carried a dead `now` parameter, and re-joining
+  with the same name created duplicate `users` rows (now idempotent: same name -> same user,
+  `"existing": true`, 200). Each fix proven by red-then-green regression checks; the crash fix
+  additionally by negative control (normalization disabled -> exactly the 3 naive-datetime
+  checks fail -> reverted).
+- A second audit round fixed four more: `/reason` crashed with TypeError when an LLM suggested a
+  non-string owner_id (unhashable dict -> set membership check) — now only strings are compared;
+  an uppercase-but-valid UUID was cleared instead of accepted (owner ids now normalized
+  case/whitespace before comparison, canonical roster spelling kept — LLM-mangled UUIDs are
+  common); the context renderer's 4000-char budget was a hardcoded constant (now an explicit
+  `max_chars` parameter, default unchanged); and `answer_prompt` still carried the dead `roster`
+  parameter from the first draft (removed). Round-2 regressions proven red-then-green; the
+  owner-normalization fix proven by negative control (strict membership restored -> exactly 2
+  checks fail -> reverted).
+- A third audit round fixed four more: a non-string title in an LLM suggestion raised TypeError
+  (titles are now validated — junk entries dropped with a note); the `/reason` context was
+  combined AFTER truncation, so the roster block could push the payload past the 4000-char rule
+  #6 budget (the always-on summary now yields room to the roster inside one bounded block); the
+  join dedup was case-SENSITIVE at the SQL level (`"dev b"` re-joining after `"Dev B"` planted a
+  duplicate row — now `func.lower` comparison, a fix the offline suite pins by source-inspection
+  since the DB leg cannot run here, proven by negative control); and the unused `InviteBody`
+  model was removed. Round-3 regressions proven red-then-green; `python -m tests.test_day5` is
+  now 48 checks (including one source-pinned check that exists precisely because the DB leg is
+  hardware-gated).
+- A fourth audit round fixed three more and re-made two of its own checks honest: `compute_roster`
+  still carried the dead now/deadline params (removed — the round-3 standard applied consistently);
+  and a join name containing a newline or tab would become a forged line inside the LLM TEAM
+  ROSTER block — an injection vector straight into every agent's prompt (all join labels are now
+  whitespace-collapsed via `_sanitize_label`). The round-4 guardrails themselves were caught being
+  vacuous — a changelog-sync check passing on an unrelated word, and a teardown check finding its
+  own sentinel — both re-written to be falsifiable, which exposed two REAL gaps: the API_CONTRACTS
+  entry did not document the idempotent 200/`existing` join semantics (now documented), and the
+  DB-backed route tests polluted the demo database with day5 rows (now best-effort DELETE
+  teardown so the runbook machine stays clean). `python -m tests.test_day5` is now 53 checks.
+
+Still broken / not done: Person B's Day 5 two-laptop integration pass with the
+honest go/no-go on the Section 17 demo. The DB-backed route legs and the live-LLM
+assignment path were verified on hardware the same day (see the top banner; `engine/.env` now
+exists locally and `max_tokens` was raised 800 → 2000 after the live run exposed Gemini 3
+thinking-token truncation).
+
+Next pair should start with: on a machine with engine/.env, run `python -m tests.test_day5`
+end to end (route legs included), then the two-laptop pass.

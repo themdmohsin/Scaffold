@@ -31,6 +31,3 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db)) -> Project
     if not project:
         raise HTTPException(status_code=404, detail="project not found")
     return project
-@router.get("/api/test/scaffold-v2")
-def scaffold_test():
-    return {"message": "Scaffold API contract test"}

@@ -1,6 +1,8 @@
 """GitHub webhook receiver: POST /projects/:id/github-webhook (frozen contract).
 
-Push events only, for now. Flow (master doc §6):
+Push events only, for now — and only from the default branch (main/master):
+feature-branch pushes are acknowledged but NOT ingested, so WIP routes never
+become contracts or fire conflicts. Flow (master doc §6):
   verify HMAC → fetch commit diffs from GitHub REST → parse DIFF (deterministic)
   → write commits + api_contracts + events.
 
@@ -113,6 +115,14 @@ async def github_webhook(
     repo = (payload.get("repository") or {}).get("full_name")
     if not repo:
         raise HTTPException(status_code=400, detail="push payload missing repository.full_name")
+
+    # Only the shared branch feeds the contract set: feature-branch pushes are
+    # WIP and would ingest half-built routes as contracts (false conflicts).
+    # Payloads without `ref` (older fixtures, manual curls) are treated as main.
+    ref = (payload.get("ref") or "refs/heads/main").strip()
+    branch = ref.rsplit("/", 1)[-1] if ref else "main"
+    if branch not in ("main", "master"):
+        return {"ok": True, "processed": [], "skipped": {"branch": branch, "reason": "non-default branch — not ingested"}}
 
     results = []
     for c in payload.get("commits", []):

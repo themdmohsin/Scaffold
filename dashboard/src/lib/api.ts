@@ -39,12 +39,29 @@ export interface Contract {
   created_at: string;
 }
 
+export interface BlockerInfo {
+  id: string;
+  description: string | null;
+  resolved: boolean;
+  created_at: string;
+}
+
+export interface EventInfo {
+  id: string;
+  type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface ContextSummary {
   project: ProjectInfo;
   tasks: { todo: number; in_progress: number; done: number };
   active_tasks: Task[];
   recent_decisions: { id: string; text: string; created_at: string }[];
   relevant_contracts: { route: string; method: string }[];
+  // Day 5 additive keys from GET /context — absent from older engines.
+  blockers?: BlockerInfo[];
+  recent_events?: EventInfo[];
   generated_at: string;
 }
 

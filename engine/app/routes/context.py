@@ -1,7 +1,9 @@
 """Context route: GET /projects/:id/context — the always-on summary (master doc §7).
 
 Shape frozen in docs/API_CONTRACTS.md; counts and active tasks are real from Day 1,
-decisions/contracts sections fill in on Day 3 when retrieval exists.
+decisions/contracts sections fill in on Day 3 when retrieval exists. Day 5 adds two
+ADDITIVE keys (blockers, recent_events) so open conflicts are visible through the
+same endpoint the dashboard and MCP clients already poll.
 """
 
 import uuid
@@ -11,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Project, Task
+from app.db.models import Blocker, Event, Project, Task
 from app.db.session import get_db
 from app.services import retrieval
 
@@ -23,6 +25,8 @@ CONTEXT_CONTRACT = {
     "active_tasks": [],
     "recent_decisions": [],
     "relevant_contracts": [],
+    "blockers": [],
+    "recent_events": [],
     "generated_at": "ISO-8601",
 }
 
@@ -78,6 +82,38 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
         "relevant_contracts": [
             {"route": c["route"], "method": c["method"]}
             for c in retrieval.recent_contracts(db, project_id, 5)
+        ],
+        # Day 5 (additive): open blockers + the newest events. This is how the
+        # conflict moment (event + blocker) becomes visible to the dashboard
+        # and to MCP clients polling the always-on summary — repo rule #6:
+        # bounded lists, never an unbounded dump.
+        "blockers": [
+            {
+                "id": str(b.id),
+                "description": b.description,
+                "resolved": b.resolved,
+                "created_at": b.created_at.isoformat(),
+            }
+            for b in db.scalars(
+                select(Blocker)
+                .where(Blocker.project_id == project_id, Blocker.resolved.is_(False))
+                .order_by(Blocker.created_at.desc())
+                .limit(10)
+            ).all()
+        ],
+        "recent_events": [
+            {
+                "id": str(e.id),
+                "type": e.type,
+                "payload": e.payload,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in db.scalars(
+                select(Event)
+                .where(Event.project_id == project_id)
+                .order_by(Event.created_at.desc())
+                .limit(8)
+            ).all()
         ],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
