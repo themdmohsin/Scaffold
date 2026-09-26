@@ -1,5 +1,13 @@
 # HANDOFF
 
+## Current State — 2026-09-25 — Mihika (Day 4 Part B)
+
+Scaffold is now through **Day 4 Part B: deterministic conflict detection + auto-GitHub-issue** (engine side; Part A plugin hooks are the other half of Day 4).
+
+Conflicts entering via `POST /projects/:id/contracts` (plugin/dashboard) or the GitHub webhook are detected deterministically, logged as `conflict_flagged` events, turned into deduped `blockers` rows, and auto-filed as GitHub issues (label `scaffold-conflict`). See `docs/demo-conflict-scenario.md` for the rehearsed demo.
+
+---
+
 ## Current State — 2026-09-24 — Mohammed
 
 Scaffold is currently through **Day 3: reasoning + retrieval + realtime groundwork**.
@@ -20,6 +28,33 @@ Major verification completed:
 - Real `/reason` request: **successful**
 
 The next major milestone is **Day 4: connecting the OpenCode fork to the Scaffold Engine through the plugin hooks**, making the coding agents Scaffold-aware during real coding sessions.
+
+---
+
+# Day 4 Part B — 2026-09-25 — Mihika (solo)
+
+## Conflict Logic + Auto-GitHub-Issue (build plan Day 4, Person B)
+
+Implemented:
+
+- `engine/app/services/conflict_service.py` — pure, deterministic detection (repo rule #3, no LLM):
+  - `conflicting_shape` — same method+route, declared request/response schemas differ (both sides must declare schemas; webhook-parsed contracts only prove path+method, so they never false-positive)
+  - `method_divergence` — same normalized path (`:id` == `{id}`), different HTTP method
+  - `sibling_collision` (warning) — same 2-segment feature prefix, different path shape
+  - identical re-registrations are explicitly NOT conflicts
+- `engine/app/services/github_issues.py` — auto-issue action: `POST /repos/{owner}/{repo}/issues` with `GITHUB_TOKEN`, label `scaffold-conflict` (self-creating), deduped against identical open issues, fail-open in every failure mode
+- `engine/app/services/conflict_recorder.py` — shared glue: writes `conflict_flagged` events + deduped open `blockers` rows, schedules issues fire-and-forget
+- Wired into BOTH contract entry points: `POST /projects/:id/contracts` (detection before insert; still 201; additive `conflicts` response key) and `POST /projects/:id/github-webhook` (per-push `conflicts` count in `processed[]`)
+- `engine/tests/test_day4b.py` — **25/25 green** (10 detection units + 5 issue-action units + DB-backed contracts-API and webhook sections against the real Supabase DB)
+- `docs/demo-conflict-scenario.md` — the rehearsed §17 demo script (Agent A/B auth scenario, fallback paths, rehearsal checklist)
+
+No schema changes — uses the existing `blockers` table and `conflict_flagged` event type, exactly as frozen Day 1.
+
+Env vars added: `SCAFFOLD_GITHUB_REPO` (engine, optional — "owner/repo" for auto-filed issues, default `themdmohsin/Scaffold`); requires existing `GITHUB_TOKEN` for issue creation.
+
+Still broken / not done: one live GitHub issue fire (needs `GITHUB_TOKEN` + `SCAFFOLD_GITHUB_REPO` in `engine/.env`), and the real two-machine loop with Part A's `tool.execute.before/after` hooks feeding `report_change` → contracts → this detector.
+
+Next pair should start with: rehearse `docs/demo-conflict-scenario.md` end to end (suites verified 25/25 + 30/30 + 29/29 on 2026-09-25), then wire Part A's hooks.
 
 ---
 

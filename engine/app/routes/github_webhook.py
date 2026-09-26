@@ -15,13 +15,15 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import ApiContract, Commit, Event, Project
 from app.db.session import get_db
 from app.services.diff_parser import parse_diff
-from app.services import reasoning, retrieval
+from app.services import conflict_service, reasoning, retrieval
+from app.services.conflict_recorder import record_conflicts
 
 router = APIRouter(tags=["webhook"])
 
@@ -127,6 +129,24 @@ async def github_webhook(
 
         summary = parse_diff(patch_text)  # deterministic — repo rule #2
 
+        # Day 4 Part B — deterministic conflict detection on freshly diff-parsed
+        # contracts. Diff-proven facts are path+method only, so shape rules can't
+        # fire here; method divergence and feature-prefix collisions can.
+        existing = [
+            {
+                "route": r.route,
+                "method": r.method,
+                "request_schema": r.request_schema,
+                "response_schema": r.response_schema,
+            }
+            for r in db.scalars(select(ApiContract).where(ApiContract.project_id == pid)).all()
+        ]
+        findings = conflict_service.detect_contract_conflicts(
+            [{"route": ri["route"], "method": ri["method"]} for ri in summary.routes_added],
+            existing,
+        )
+        record_conflicts(db, pid, findings, incoming_source=f"github push {sha[:10]}")
+
         llm_summary = None
         try:
             llm_summary = reasoning.summarize_diff(
@@ -176,6 +196,7 @@ async def github_webhook(
                 "routes": len(summary.routes_added),
                 "deps": len(summary.dependencies_added),
                 "env_keys": len(summary.env_keys_added),
+                "conflicts": len(findings),
             }
         )
 

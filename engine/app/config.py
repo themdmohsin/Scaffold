@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     # Optional Day 3 overrides — defaults: gemini/gemini-2.5-flash + gemini/gemini-embedding-001
     scaffold_llm_model: str = ""
     scaffold_embed_model: str = ""
+    # Optional Day 4 Part B — "owner/repo" the conflict-issue action files against.
+    scaffold_github_repo: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
