@@ -1,0 +1,16 @@
+{
+  "name": "scaffold-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "description": "Typecheck tooling for the Scaffold OpenCode plugin (the fork itself is installed with bun, inside opencode/).",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@opencode-ai/sdk": "1.18.32",
+    "@types/node": "24.12.2",
+    "effect": "4.0.0-beta.83",
+    "typescript": "5.8.2",
+    "zod": "4.1.8"
+  }
+}

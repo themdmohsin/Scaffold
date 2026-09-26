@@ -1,0 +1,23 @@
+{
+  // Types for `@opencode-ai/plugin` are resolved to the VENDORED source in opencode/packages/plugin
+  // (version 1.18.32, identical to the published package) so the hook signatures checked here are
+  // the ones the forked CLI actually calls.
+  "compilerOptions": {
+    "target": "ES2022",
+    // DOM is only for the `HeadersInit` reference inside the vendored plugin types.
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@opencode-ai/plugin": ["./opencode/packages/plugin/src/index.ts"]
+    }
+  },
+  "include": [".opencode/plugins/**/*.ts", "tests/**/*.ts"]
+}

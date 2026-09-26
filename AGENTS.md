@@ -101,5 +101,19 @@ cd dashboard && npm run build
 # opencode fork (the Scaffold client) — run from source
 cd opencode-plugin/opencode && bun install --ignore-scripts
 bun run --cwd packages/opencode src/index.ts --version   # -> local
+
+# engine verification harnesses (require engine/.env with DATABASE_URL + schema applied)
+cd engine && python -m tests.test_day2   # diff parser, signed webhook, all 6 MCP tools
+cd engine && python -m tests.test_day3   # retrieval, /reason, context enrichment
+
+# plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
+cd opencode-plugin && npm install && npm run typecheck
+# plugin verification harnesses
+# (no engine, no Postgres, no LLM needed; Node 22.18+ strips TS types natively)
+cd opencode-plugin && node tests/verify_plugin.ts
+cd opencode-plugin && python tests/mcp_sdk_interop.py        # vs the real mcp SDK (engine/.venv)
+cd opencode-plugin && python tests/acceptance_live.py --self-test
+# plugin acceptance against a LIVE engine (needs engine/.env + Postgres up; no LLM key)
+cd opencode-plugin && python tests/acceptance_live.py
 ```
-(No automated test suite yet — engine is smoke-tested via TestClient, dashboard via `npm run build`. Update this section when real tests land.)
+(There is no pytest suite: the engine harnesses are script-style modules that print PASS/FAIL and exit non-zero on failure. The dashboard is checked via `npm run build`. Keep this section current when harnesses move.)
