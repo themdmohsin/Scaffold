@@ -6,6 +6,7 @@ only) for {answer, suggested_tasks}.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Project
 from app.db.session import get_db
 from app.routes.context import build_context
-from app.services import reasoning, retrieval
+from app.services import availability, reasoning, retrieval
 
 router = APIRouter(tags=["reason"])
 
@@ -25,7 +26,7 @@ class ReasonRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
 
 
-def _render_context(context: dict, hits: dict) -> str:
+def _render_context(context: dict, hits: dict, max_chars: int = MAX_CONTEXT_CHARS) -> str:
     """Compact text rendering of the always-on summary + retrieval hits."""
     lines: list[str] = []
     p = context["project"]
@@ -72,7 +73,7 @@ def _render_context(context: dict, hits: dict) -> str:
             lines.append(f"- {c['method']} {c['route']}")
 
     block = "\n".join(lines)
-    return block[:MAX_CONTEXT_CHARS]
+    return block[:max_chars]
 
 
 @router.post("/projects/{project_id}/reason")
@@ -82,11 +83,32 @@ def reason(project_id: uuid.UUID, body: ReasonRequest, db: Session = Depends(get
 
     context = build_context(db, project_id)
     hits = retrieval.retrieve_for_prompt(db, project_id, body.prompt)
-    context_block = _render_context(context, hits)
+
+    # Day 5 (Person A): deterministic availability facts + deterministic
+    # re-validation of whatever the LLM suggests. Repo rule #2 — the LLM only
+    # chooses among roster entries the SQL already computed; it never invents
+    # owners or dates, and nothing unvalidated reaches the client.
+    project = db.get(Project, project_id)
+    now = datetime.now(timezone.utc)
+    roster_rows = availability.roster(db, project_id)
+    roster_block = availability.render_roster_block(roster_rows, project.deadline, now)
+    # Repo rule #6: the COMBINED block is bounded, not just each half. The roster
+    # is the Day 5 payload and stays whole (bounded by MAX_ROSTER_ROWS); the
+    # always-on summary yields the remaining room.
+    base_block = _render_context(context, hits)
+    room = max(0, MAX_CONTEXT_CHARS - len(roster_block) - 2)
+    context_block = (base_block[:room] + "\n\n" + roster_block) if room else roster_block
 
     try:
-        return reasoning.answer_prompt(context_block, body.prompt)
+        result = reasoning.answer_prompt(context_block, body.prompt)
     except reasoning.LlmUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # provider outage / malformed response upstream
         raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
+
+    result["suggested_tasks"], notes = availability.validate_assignments(
+        result.get("suggested_tasks", []), roster_rows, now, project.deadline
+    )
+    if notes:
+        result["assignment_notes"] = notes  # additive; frozen shape untouched
+    return result

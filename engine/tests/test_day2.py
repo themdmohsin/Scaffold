@@ -167,6 +167,18 @@ check(
     str(proc),
 )
 
+branch_body = json.dumps({
+    "repository": {"full_name": "themdmohsin/Scaffold"},
+    "ref": "refs/heads/feature/wip-auth",
+    "commits": [{"id": COMMIT_SHA, "message": "WIP routes on a branch"}],
+}).encode()
+r_branch = client.post(url, content=branch_body, headers=signed(branch_body))
+check(
+    "feature-branch push acknowledged but NOT ingested (WIP routes must not become contracts)",
+    r_branch.status_code == 200 and r_branch.json().get("processed") == [] and "skipped" in r_branch.json(),
+    r_branch.text[:160],
+)
+
 r_bad = client.post(url, content=body, headers={**signed(body), "X-Hub-Signature-256": "sha256=" + "0" * 64})
 check("bad signature rejected 403", r_bad.status_code == 403, str(r_bad.status_code))
 

@@ -10,6 +10,7 @@ import {
   type ContextSummary,
   type Contract,
   type Decision,
+  type ReasonResponse,
   type Task,
 } from "./lib/api";
 import { subscribeToProject, type RealtimeHandle } from "./lib/realtime";
@@ -53,7 +54,8 @@ export default function App() {
   const [newTitle, setNewTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<{ text: string; tasks: { title: string }[] } | null>(null);
+  // Tasks reuse the API type: they carry validated owner_id/due_at (Day 5).
+  const [answer, setAnswer] = useState<{ text: string; tasks: ReasonResponse["suggested_tasks"] } | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const rtRef = useRef<RealtimeHandle | null>(null);
   const pidRef = useRef<string>("");
@@ -71,6 +73,10 @@ export default function App() {
   const join = useCallback(
     async (id: string) => {
       setPhase({ kind: "loading" });
+      // Every mutation (ask/addSuggested/addTask/moveTask) targets pidRef —
+      // leaving it empty made them all POST to /projects//… (404) while reads
+      // still worked, so the dashboard looked alive and every button was dead.
+      pidRef.current = id;
       try {
         const data = await load(id);
         setPhase({ kind: "ok", data });
@@ -125,11 +131,13 @@ export default function App() {
     }
   }
 
-  async function addSuggested(title: string) {
+  // Day 5: forward the validated owner_id/due_at from /reason, not just the title —
+  // dropping them would silently un-assign the task the engine just proposed.
+  async function addSuggested(task: { title: string; owner_id: string | null; due_at: string | null }) {
     const id = pidRef.current;
     try {
-      await createTask(id, { title });
-      setAnswer((a) => (a ? { ...a, tasks: a.tasks.filter((t) => t.title !== title) } : a));
+      await createTask(id, { title: task.title, owner_id: task.owner_id, due_at: task.due_at });
+      setAnswer((a) => (a ? { ...a, tasks: a.tasks.filter((t) => t.title !== task.title) } : a));
       const data = await load(id);
       setPhase({ kind: "ok", data });
     } catch (err) {
@@ -157,6 +165,7 @@ export default function App() {
     rtRef.current = null;
     setLive("");
     setAnswer(null);
+    pidRef.current = "";
     setPhase({ kind: "idle" });
   }
 
@@ -261,13 +270,27 @@ export default function App() {
                 {answer.tasks.length > 0 && (
                   <div className="suggested">
                     {answer.tasks.map((t) => (
-                      <button key={t.title} onClick={() => addSuggested(t.title)}>
+                      <button key={t.title} onClick={() => addSuggested(t)}>
                         + {t.title}
                       </button>
                     ))}
                   </div>
                 )}
               </div>
+            )}
+          </section>
+
+          <section className="panel">
+            <h3>Conflicts &amp; blockers</h3>
+            {(phase.data.context.blockers?.length ?? 0) === 0 && <p className="empty">No open blockers — agents are in sync.</p>}
+            {(phase.data.context.blockers ?? []).map((b) => (
+              <div className="decision conflict" key={b.id}>
+                <p>⚠ {b.description}</p>
+                <small className="when">{timeAgo(b.created_at)}</small>
+              </div>
+            ))}
+            {(phase.data.context.recent_events ?? []).some((e) => e.type === "conflict_flagged") && (
+              <p className="empty">conflict_flagged event in the recent feed — see the blocker above.</p>
             )}
           </section>
 

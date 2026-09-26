@@ -116,11 +116,20 @@ Answer the user's question using ONLY the project context provided. Be concise a
 If the question implies new work, suggest up to 3 tasks.
 Respond with ONLY a JSON object — no markdown fences, no prose — shaped exactly:
 {"answer": "<your answer>", "suggested_tasks": [{"title": "<short imperative>", "owner_id": null, "due_at": null}]}
-Use null for owner_id and due_at. Never invent user IDs or dates."""
+Assignment rule: if the context contains a TEAM ROSTER block, you MAY set owner_id — but ONLY
+to a user_id copied verbatim from that roster. Never invent or truncate user IDs. Set due_at
+only as an ISO-8601 date/datetime within the project deadline (if any) — otherwise null.
+If there is no roster or no fitting teammate, use null."""
 
 
 def answer_prompt(context_block: str, prompt: str) -> dict:
-    """The /reason core: small targeted context + prompt -> {answer, suggested_tasks}."""
+    """The /reason core: small targeted context + prompt -> {answer, suggested_tasks}.
+
+    Day 5: the caller embeds the deterministic TEAM ROSTER in the context block,
+    so suggestions may carry owner_ids — and the caller re-validates every one
+    afterwards (availability.py). This function stays LLM-only and never decides
+    what is valid (repo rule #2).
+    """
     resp = completion(
         model=chat_model(),
         messages=[
@@ -128,7 +137,10 @@ def answer_prompt(context_block: str, prompt: str) -> dict:
             {"role": "user", "content": f"PROJECT CONTEXT:\n{context_block}\n\nQUESTION:\n{prompt}"},
         ],
         api_key=_key(),
-        max_tokens=800,
+        # Gemini 3 thinking tokens count against this budget BEFORE the visible
+        # JSON — 800 truncated responses mid-string (finish_reason=length ->
+        # unparseable -> zero suggested_tasks). 2000 leaves headroom for both.
+        max_tokens=2000,
         temperature=0.2,
     )
     raw = (resp.choices[0].message.content or "").strip()
@@ -149,11 +161,18 @@ def _parse_answer(raw: str) -> dict:
         return {"answer": raw.strip()[:2000], "suggested_tasks": []}
 
     tasks: list[dict] = []
+    seen_titles: set[str] = set()
     for t in (data.get("suggested_tasks") or [])[:3]:
         if isinstance(t, dict) and isinstance(t.get("title"), str) and t["title"].strip():
+            title = t["title"].strip()
+            # Duplicates collide on the dashboard (the suggested-button key and
+            # the click's removal filter are both title-based): keep the first.
+            if title.lower() in seen_titles:
+                continue
+            seen_titles.add(title.lower())
             tasks.append(
                 {
-                    "title": t["title"].strip(),
+                    "title": title,
                     "owner_id": t.get("owner_id") if isinstance(t.get("owner_id"), str) else None,
                     "due_at": t.get("due_at") if isinstance(t.get("due_at"), str) else None,
                 }
