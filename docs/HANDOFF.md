@@ -1,4 +1,54 @@
 # HANDOFF
+## Current State — 2026-09-27 — Buffy (team LLM key live — embeddings backfilled, /reason re-verified)
+
+Session run with SCAFFOLD_TEAM_LLM_KEY set in engine/.env (Google AI Studio, new `AQ.A…` key format —
+LiteLLM accepts it unchanged). (1) **Embedding drift closed**: 13 of 57 api_contracts rows (created by
+later day2/day5 test+webhook runs) had NULL embeddings; `backfill_embeddings` re-run (idempotent) →
+now 57/57 contracts + 21/21 decisions embedded, 0 failed (new rows embed on-write; this was backfill
+drift only). (2) **Real /reason re-verified** against the demo project (fdcb7511…): HTTP 200, real
+Gemini via LiteLLM (`gemini/gemini-3.6-flash`), verbatim exchange below. (3) `supabase_realtime`
+publication re-checked directly in Postgres: tasks/decisions/events all members. (4) Dashboard:
+StrictMode removed (it double-subscribed every Realtime channel in dev), `npm run build` green,
+test_day3 35/35 re-run. Uncommitted on disk: lib/realtime.ts DELETE-binding fix (banner below) +
+src/main.tsx StrictMode removal. Still user-side: GitHub PAT needs Issues: read+write before #5 can
+be closed.
+
+Verbatim /reason exchange (2026-09-27, project fdcb7511-434b-40c1-a391-0cd45e2150a5):
+
+```
+POST /projects/fdcb7511-434b-40c1-a391-0cd45e2150a5/reason
+{"prompt": "We need to add user authentication. Should we roll our own JWT session handling or use a provider? Which existing API contracts does it touch?"}
+→ HTTP 200
+{"answer": "There is no decision recorded in the project context regarding rolling custom JWT session handling versus using an auth provider. The current project API contracts are GET /api/test/scaffold-v2, GET /api/test/scaffold, and POST /api/payments/checkout (which would require authentication protection).",
+ "suggested_tasks": [
+   {"title": "Select user authentication approach and update decisions", "owner_id": "7ce9a46f-b657-45d4-ab66-f0474bf31a33", "due_at": null},
+   {"title": "Update API contracts for authentication routes", "owner_id": "7ce9a46f-b657-45d4-ab66-f0474bf31a33", "due_at": null}]}
+```
+
+---
+
+## Current State — 2026-09-27 — Mohammed + Buffy (blockers cleared: 165/165 suites re-green, realtime verified live)
+
+The three user-side blockers from the pass below are resolved and re-verified end to end.
+**(1) Supabase DB password rotated** → engine/.env updated; all four suites re-run against live
+Supabase — day2 31, day3 35, day4b 25, day5 74 checks: **165 passed, 0 failed** (first full-suite
+green on Supabase since the rotation); the Day 3 migration (pgvector + realtime publication)
+applies cleanly. **(2) Realtime VERIFIED — real push, both legs.** dashboard/.env now carries the
+VITE_ vars (one correction: `VITE_SUPABASE_URL` must be the bare project URL
+`https://<ref>.supabase.co`, NOT `.../rest/v1` — the latter breaks the realtime websocket handshake;
+fixed). Joined the demo project, pill shows `live`; a row INSERTed directly into Postgres pushed to
+the board with zero interaction, and its DELETE did too after a code fix: the `postgres_changes`
+bindings filtered on `project_id`, but DELETE payloads carry only the old row's PK under default
+replica identity, so deletes were silently dropped — `dashboard/src/lib/realtime.ts` now adds an
+unfiltered DELETE binding per table (the onChange refetch is project-scoped, so cross-project
+delete events are harmless). **(3) GitHub PAT STILL 403 on comment/close of issue #5** — the token
+is valid (GET /user and repo reads return 200 as themdmohsin) but writes are denied, i.e. the token
+in engine/.env has Issues: read-only. Likely a different token than the one whose permissions were
+edited, or the permission change wasn't saved. Action: on the exact token pasted in engine/.env,
+confirm Repository permissions → Issues → Read and write, then re-verify by commenting/closing #5
+(#5 stays open until then). Demo project untouched; verification servers torn down. Uncommitted:
+the realtime DELETE-binding fix in dashboard/src/lib/realtime.ts.
+---
 ## Current State — 2026-09-27 — Mohammed + Buffy (post-rehearsal verification pass)
 Post-Day-6 closeout per the remaining-open-items list (user-approved deviations from the freeze:
 one code change — the 503 retry — plus the real GitHub-issue leg). **Gemini 503 flap FIXED**:
