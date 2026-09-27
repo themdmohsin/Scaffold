@@ -1,5 +1,46 @@
 # HANDOFF
 
+## Current State — 2026-09-27 — Prabhanjan (Day 6 rehearsal complete — 3/3 PASS, main is submission-ready)
+
+Day 6 (Rehearsal & Buffer) is done per build plan §2: nothing new was built —
+rehearsal, stabilization, and the backup video only. The stack was cold-restarted
+from scratch after a machine reboot (Docker Desktop self-start → `scaffold-day5-pg`
+`docker start` → engine :8010 via `.venv` python → dashboard :5173 via
+`VITE_ENGINE_URL=http://127.0.0.1:8010`; note vite binds IPv6-only, open
+`http://localhost:5173/`, not 127.0.0.1).
+
+**§17 conflict scenario rehearsed 3× (PASS every time):** Agent A contract
+(POST /api/auth/login {email,password}→{token}) registers clean — no conflict
+signal; Agent B divergent shape ({username,password}→{jwt}) deterministically
+flags `conflicting_shape` → 1 conflict_flagged event + 1 open blocker every run
+(1/1/1 summary; dedupe verified across runs). Verified in DB and via
+`GET /context`; dashboard renders the red-flagged blocker + both contract chips
+correctly at 1920×1080 (projector pass ✓). **Live /reason leg PASS:**
+`live_reason_check` end-to-end with real Gemini (3 suggested tasks,
+roster-valid owner_ids). **GitHub-issue leg:** rehearsed fail-open (no local
+`GITHUB_TOKEN` → engine skips issue creation before any API call; nothing was
+filed against themdmohsin/Scaffold). To light it up for the demo: fine-grained
+PAT (Issues: RW on themdmohsin/Scaffold) + `SCAFFOLD_GITHUB_REPO` in
+`engine/.env` — optional, demo-able either way.
+
+**Backup video recorded** (build plan Person A requirement, §15 risk
+coverage): join → pristine state → A registers → B diverges → Leave/Join
+reveal of the [CONFLICT] blocker — saved at
+`docs/demo-assets/day6-backup-rehearsal.webm` (untracked; keep out of git,
+use for judging fallback). Demo-state reset procedure used between every run:
+`delete from blockers/events/api_contracts where project_id='52a9e358-…'`.
+
+**Demo notes (from rehearsal):** dashboard has no polling — updates appear on
+action/refresh (refetch-on-action is the rehearsed GO flow; don't refresh
+mid-demo, Leave→Join is the reveal); Ask button re-click on Gemini 503 flaps
+remains the only known flaky beat. Housekeeping done: `day5-part-A` branch
+deleted (local+origin), scratch logs removed, demo project reset to pristine
+(0 contracts/events/blockers/tasks). **Verdict: GO. `main` (2917a3a) is the
+submission — freeze it; no further commits unless something is actively
+broken.**
+
+---
+
 ## Current State — 2026-09-26 — Prabhanjan (Day 5 complete — both persons, GO verdict recorded)
 
 Day 5 Person A is built and verified on hardware: deterministic availability
