@@ -54,6 +54,10 @@ check(
 r = reasoning._parse_answer('{"answer": "x", "suggested_tasks": ["not a dict"]}')
 check("non-dict tasks dropped", r["suggested_tasks"] == [], str(r))
 
+# transient-error classifier (the demo's known flaky beat: Gemini free-tier 503s)
+check("_is_transient flags 503/429/timeout/connection", reasoning._is_transient(RuntimeError("HTTP 503 service unavailable")) and reasoning._is_transient(RuntimeError("rate limit 429")) and reasoning._is_transient(RuntimeError("request timed out")) and reasoning._is_transient(RuntimeError("connection reset")))
+check("_is_transient passes auth/config errors", not reasoning._is_transient(RuntimeError("invalid api key")) and not reasoning._is_transient(RuntimeError("SCAFFOLD_TEAM_LLM_KEY is not set")))
+
 # ---------------------------------------------------------------------------
 # 2. Fixtures: project + decisions/contracts in the real DB
 # ---------------------------------------------------------------------------
@@ -165,6 +169,38 @@ try:
     reasoning.completion = _StubCompletion(exc=RuntimeError("provider outage"))  # type: ignore[assignment]
     r502 = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "anything"})
     check("reason 502 on provider error", r502.status_code == 502, str(r502.status_code))
+
+    # Gemini free-tier 503 flaps self-heal: two transient failures then success
+    class _Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            if self.calls <= 2:
+                raise RuntimeError("HTTP 503: model overloaded")
+            return _FAKE_COMPLETION
+
+    flaky = _Flaky()
+    reasoning.completion = flaky  # type: ignore[assignment]
+    r_ok = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "retry me"})
+    check("transient 503 flap self-heals via retry", r_ok.status_code == 200 and r_ok.json().get("answer"), str(r_ok.status_code))
+    check("retry made exactly 3 attempts", flaky.calls == 3, str(flaky.calls))
+
+    # non-transient errors must fail fast — no retry, no delay
+    class _HardFail:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            raise RuntimeError("invalid api key")
+
+    hard = _HardFail()
+    reasoning.completion = hard  # type: ignore[assignment]
+    r_hard = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "no retry please"})
+    check("non-transient provider error -> 502", r_hard.status_code == 502, str(r_hard.status_code))
+    check("non-transient provider error not retried (1 call)", hard.calls == 1, str(hard.calls))
 finally:
     reasoning.completion = orig_completion  # type: ignore[assignment]
 

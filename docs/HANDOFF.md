@@ -1,5 +1,26 @@
 # HANDOFF
-
+## Current State — 2026-09-27 — Mohammed + Buffy (post-rehearsal verification pass)
+Post-Day-6 closeout per the remaining-open-items list (user-approved deviations from the freeze:
+one code change — the 503 retry — plus the real GitHub-issue leg). **Gemini 503 flap FIXED**:
+`reasoning.answer_prompt` now retries transient provider errors (503/502/500/504/429/timeout/connection,
+2 retries, ~1s/2s backoff) while non-transient errors (bad key etc.) fail fast unchanged — the demo's
+only flaky beat self-heals; pinned by new `test_day3` checks (classifier units + "exactly 3 attempts on
+flap, 1 on hard error" endpoint tests). **GitHub-issue leg PROVEN LIVE**: the engine's real
+`create_conflict_issue` path filed [issue #5](https://github.com/themdmohsin/Scaffold/issues/5)
+(conflicting-shape finding, deterministic body). **Blocked on three user-side items:**
+(1) **Supabase DB password mismatch** — `DATABASE_URL` in engine/.env gets `password authentication
+failed for user "postgres"` (pooler circuit-breaker trips on retry bursts); Day 5/6 verification ran on
+the Docker rig, so Supabase was never re-tested after a password rotation. Fix: reset the DB password in
+Supabase (Settings → Database) and update `DATABASE_URL`, then re-run all suites (day2/3/4b/5) — they
+are written for the real DB and were NOT re-run in this pass (retry change verified by direct
+invocation instead). (2) **Fine-grained PAT permissions incomplete** — token creates issues (201) but
+is denied comment/close/label (403 "Resource not accessible by personal access token"), so #5 is still
+OPEN: regenerate the PAT with Issues: Read and write (or use a classic PAT with repo scope), then close
+#5 (or close it manually) — the label `scaffold-conflict` self-creates on the next real conflict once
+the token can. (3) **Supabase realtime verification pending** — `dashboard/.env` still has no
+`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY`; realtime leg (cross-tab push without interaction) runs as
+soon as they're added. Demo state untouched; demo project still pristine.
+---
 ## Current State — 2026-09-27 — Prabhanjan (Day 6 rehearsal complete — 3/3 PASS, main is submission-ready)
 
 Day 6 (Rehearsal & Buffer) is done per build plan §2: nothing new was built —
