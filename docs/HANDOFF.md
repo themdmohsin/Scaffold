@@ -1,4 +1,33 @@
 # HANDOFF
+## Current State — 2026-09-28 — Buffy (single-host dry-run PASS; Gemini model swap; real fork session STILL unproven)
+
+Runbook dry-run on the live stack (engine 0.0.0.0:8000 + dashboard): invite → join 201,
+re-join idempotent 200 `existing:true`; §17 conflict beat LIVE (A clean, B divergent →
+event + blocker + a REAL GitHub issue filed via GITHUB_TOKEN); `/reason` roster assignment
+(Gemini picked the just-invited "Laptop B (dry-run)" user by open-task count); dashboard
+ask → suggestion chip → click → task landed ASSIGNED (owner verified via API); realtime
+pill live; test_day3 35/35.
+
+**Gemini model crisis on the rotated key (`AQ.A…` = "new user")**: gemini-2.5-flash →
+404 "no longer available to new users"; gemini-3.6-flash → free pool saturated (503
+storms, all 3 retries exhausted); 2.5-pro 404; 3.1-pro-preview 429. Working model found
+and set via the frozen override: `SCAFFOLD_LLM_MODEL=gemini/gemini-3.1-flash-lite` in
+engine/.env (embeddings unchanged, gemini-embedding-001). Pool still flaps minute-to-
+minute — a model fallback chain in reasoning.py is the proper fix. `SCAFFOLD_DEFAULT_PROJECT_ID`
+also added (demo project) so plugin `get_project_context()` resolves bare.
+
+**The ONE unproven leg: a real OpenCode fork session driving the plugin.** `opencode run`
+(headless, SCAFFOLD_ENGINE_URL set, plugin copied into a scratch worktree) HUNG silently
+(300s, no file written, no change_reported event; bun process lingered). Wire format is
+already proven (3/3 live MCP acceptance), but the real agent loop never ran. Next session:
+retry with the Claude key and debug logging (fork logs under ~/.local/share/opencode/log/).
+Demo project has dry-run artifacts (2 extra /api/auth/login contracts + conflict blocker,
+"Implement password-reset logic" task, "Laptop B (dry-run)" user) — reset before the real
+demo: delete those contracts/tasks/events/blockers rows for project fdcb7511….
+PR #6 (day6-mk-retry-and-verification) is OPEN against main — merge it first.
+
+---
+
 ## Current State — 2026-09-27 — Buffy (team LLM key live — embeddings backfilled, /reason re-verified)
 
 Session run with SCAFFOLD_TEAM_LLM_KEY set in engine/.env (Google AI Studio, new `AQ.A…` key format —
