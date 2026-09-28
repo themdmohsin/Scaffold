@@ -54,7 +54,7 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _completion_with_retry(**kwargs):
-    """answer_prompt's completion call, retried on transient provider errors.
+    """One model's completion call, retried on transient provider errors.
 
     Two retries (~1s/2s backoff) absorb the free-tier 503 flaps; anything
     non-transient re-raises immediately so callers keep their exact failure
@@ -69,6 +69,63 @@ def _completion_with_retry(**kwargs):
                 raise
             time.sleep(delay)
             delay *= 2
+
+
+# Model fallback chain: the rotated SCAFFOLD_TEAM_LLM_KEY is a Google "new user"
+# key, and the free-tier model roster for those keys flaps independently of the
+# 503 retry above (whole models 404 "no longer available to new users", or the
+# configured model's pool saturates so hard the 3 retries all fail). These are
+# plain fallback candidates, not an LLM decision (repo rule #3) — the *first*
+# model that answers wins and is cached for the rest of the process so later
+# calls skip straight to it instead of re-probing every candidate every time.
+FALLBACK_MODELS = [
+    "gemini/gemini-3.1-flash-lite",
+    "gemini/gemini-3.7-flash",
+    "gemini/gemini-3.8-flash",
+]
+
+_model_cache: dict[str, str] = {}
+
+
+def _candidate_models() -> list[str]:
+    """Configured model first, then the fallback list, with any cached winner
+    from an earlier call in this process moved to the front."""
+    primary = chat_model()
+    ordered = [primary] + [m for m in FALLBACK_MODELS if m != primary]
+    winner = _model_cache.get("winner")
+    if winner and winner in ordered:
+        ordered.remove(winner)
+        ordered.insert(0, winner)
+    return ordered
+
+
+def _is_model_unavailable(exc: Exception) -> bool:
+    """True when the *model itself* is the problem (not a transient hiccup) —
+    e.g. a 404 'no longer available to new users', so the next candidate should
+    be tried instead of retrying the same dead model."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status == 404:
+        return True
+    msg = str(exc).lower()
+    return "404" in msg or "not found" in msg or "no longer available" in msg
+
+
+def _completion_with_fallback(**kwargs):
+    """Try the configured model (with its own transient-error retries), then
+    walk the fallback candidates on a 404/model-unavailable or on the primary's
+    retries being fully exhausted by transient errors. Any other error type
+    (bad key, etc.) still fails fast and propagates unchanged."""
+    last_exc: Exception | None = None
+    for model in _candidate_models():
+        try:
+            resp = _completion_with_retry(**{**kwargs, "model": model})
+            _model_cache["winner"] = model
+            return resp
+        except Exception as exc:
+            last_exc = exc
+            if not (_is_model_unavailable(exc) or _is_transient(exc)):
+                raise
+    raise last_exc
 
 
 def _key() -> str:
@@ -132,8 +189,7 @@ def summarize_diff(
         f"Files: {', '.join(files_changed[:10])}\n"
         f"Detected changes: {'; '.join(findings) if findings else 'no structural changes detected'}"
     )
-    resp = completion(
-        model=chat_model(),
+    resp = _completion_with_fallback(
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -166,8 +222,7 @@ def answer_prompt(context_block: str, prompt: str) -> dict:
     afterwards (availability.py). This function stays LLM-only and never decides
     what is valid (repo rule #2).
     """
-    resp = _completion_with_retry(
-        model=chat_model(),
+    resp = _completion_with_fallback(
         messages=[
             {"role": "system", "content": _ANSWER_SYSTEM},
             {"role": "user", "content": f"PROJECT CONTEXT:\n{context_block}\n\nQUESTION:\n{prompt}"},
