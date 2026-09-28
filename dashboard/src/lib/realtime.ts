@@ -33,11 +33,16 @@ export function subscribeToProject(
 
   let channel: RealtimeChannel = client.channel(`scaffold:${projectId}`);
   for (const table of TABLES) {
-    channel = channel.on(
-      "postgres_changes",
-      { event: "*", schema: "public", table, filter: `project_id=eq.${projectId}` },
-      onChange,
-    );
+    channel = channel
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table, filter: `project_id=eq.${projectId}` },
+        onChange,
+      )
+      // DELETE payloads carry only the old row's PK (default replica identity),
+      // so a server-side project_id filter would drop them. Subscribe unfiltered
+      // for deletes; the onChange refetch is project-scoped anyway.
+      .on("postgres_changes", { event: "DELETE", schema: "public", table }, onChange);
   }
   channel.subscribe((status) => onStatus?.(status));
 

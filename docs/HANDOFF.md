@@ -1,5 +1,105 @@
 # HANDOFF
+## Current State — 2026-09-28 — Buffy (single-host dry-run PASS; Gemini model swap; real fork session STILL unproven)
 
+Runbook dry-run on the live stack (engine 0.0.0.0:8000 + dashboard): invite → join 201,
+re-join idempotent 200 `existing:true`; §17 conflict beat LIVE (A clean, B divergent →
+event + blocker + a REAL GitHub issue filed via GITHUB_TOKEN); `/reason` roster assignment
+(Gemini picked the just-invited "Laptop B (dry-run)" user by open-task count); dashboard
+ask → suggestion chip → click → task landed ASSIGNED (owner verified via API); realtime
+pill live; test_day3 35/35.
+
+**Gemini model crisis on the rotated key (`AQ.A…` = "new user")**: gemini-2.5-flash →
+404 "no longer available to new users"; gemini-3.6-flash → free pool saturated (503
+storms, all 3 retries exhausted); 2.5-pro 404; 3.1-pro-preview 429. Working model found
+and set via the frozen override: `SCAFFOLD_LLM_MODEL=gemini/gemini-3.1-flash-lite` in
+engine/.env (embeddings unchanged, gemini-embedding-001). Pool still flaps minute-to-
+minute — a model fallback chain in reasoning.py is the proper fix. `SCAFFOLD_DEFAULT_PROJECT_ID`
+also added (demo project) so plugin `get_project_context()` resolves bare.
+
+**The ONE unproven leg: a real OpenCode fork session driving the plugin.** `opencode run`
+(headless, SCAFFOLD_ENGINE_URL set, plugin copied into a scratch worktree) HUNG silently
+(300s, no file written, no change_reported event; bun process lingered). Wire format is
+already proven (3/3 live MCP acceptance), but the real agent loop never ran. Next session:
+retry with the Claude key and debug logging (fork logs under ~/.local/share/opencode/log/).
+Demo project has dry-run artifacts (2 extra /api/auth/login contracts + conflict blocker,
+"Implement password-reset logic" task, "Laptop B (dry-run)" user) — reset before the real
+demo: delete those contracts/tasks/events/blockers rows for project fdcb7511….
+PR #6 (day6-mk-retry-and-verification) is OPEN against main — merge it first.
+
+---
+
+## Current State — 2026-09-27 — Buffy (team LLM key live — embeddings backfilled, /reason re-verified)
+
+Session run with SCAFFOLD_TEAM_LLM_KEY set in engine/.env (Google AI Studio, new `AQ.A…` key format —
+LiteLLM accepts it unchanged). (1) **Embedding drift closed**: 13 of 57 api_contracts rows (created by
+later day2/day5 test+webhook runs) had NULL embeddings; `backfill_embeddings` re-run (idempotent) →
+now 57/57 contracts + 21/21 decisions embedded, 0 failed (new rows embed on-write; this was backfill
+drift only). (2) **Real /reason re-verified** against the demo project (fdcb7511…): HTTP 200, real
+Gemini via LiteLLM (`gemini/gemini-3.6-flash`), verbatim exchange below. (3) `supabase_realtime`
+publication re-checked directly in Postgres: tasks/decisions/events all members. (4) Dashboard:
+StrictMode removed (it double-subscribed every Realtime channel in dev), `npm run build` green,
+test_day3 35/35 re-run. Uncommitted on disk: lib/realtime.ts DELETE-binding fix (banner below) +
+src/main.tsx StrictMode removal. Still user-side: GitHub PAT needs Issues: read+write before #5 can
+be closed.
+
+Verbatim /reason exchange (2026-09-27, project fdcb7511-434b-40c1-a391-0cd45e2150a5):
+
+```
+POST /projects/fdcb7511-434b-40c1-a391-0cd45e2150a5/reason
+{"prompt": "We need to add user authentication. Should we roll our own JWT session handling or use a provider? Which existing API contracts does it touch?"}
+→ HTTP 200
+{"answer": "There is no decision recorded in the project context regarding rolling custom JWT session handling versus using an auth provider. The current project API contracts are GET /api/test/scaffold-v2, GET /api/test/scaffold, and POST /api/payments/checkout (which would require authentication protection).",
+ "suggested_tasks": [
+   {"title": "Select user authentication approach and update decisions", "owner_id": "7ce9a46f-b657-45d4-ab66-f0474bf31a33", "due_at": null},
+   {"title": "Update API contracts for authentication routes", "owner_id": "7ce9a46f-b657-45d4-ab66-f0474bf31a33", "due_at": null}]}
+```
+
+---
+
+## Current State — 2026-09-27 — Mohammed + Buffy (blockers cleared: 165/165 suites re-green, realtime verified live)
+
+The three user-side blockers from the pass below are resolved and re-verified end to end.
+**(1) Supabase DB password rotated** → engine/.env updated; all four suites re-run against live
+Supabase — day2 31, day3 35, day4b 25, day5 74 checks: **165 passed, 0 failed** (first full-suite
+green on Supabase since the rotation); the Day 3 migration (pgvector + realtime publication)
+applies cleanly. **(2) Realtime VERIFIED — real push, both legs.** dashboard/.env now carries the
+VITE_ vars (one correction: `VITE_SUPABASE_URL` must be the bare project URL
+`https://<ref>.supabase.co`, NOT `.../rest/v1` — the latter breaks the realtime websocket handshake;
+fixed). Joined the demo project, pill shows `live`; a row INSERTed directly into Postgres pushed to
+the board with zero interaction, and its DELETE did too after a code fix: the `postgres_changes`
+bindings filtered on `project_id`, but DELETE payloads carry only the old row's PK under default
+replica identity, so deletes were silently dropped — `dashboard/src/lib/realtime.ts` now adds an
+unfiltered DELETE binding per table (the onChange refetch is project-scoped, so cross-project
+delete events are harmless). **(3) GitHub PAT STILL 403 on comment/close of issue #5** — the token
+is valid (GET /user and repo reads return 200 as themdmohsin) but writes are denied, i.e. the token
+in engine/.env has Issues: read-only. Likely a different token than the one whose permissions were
+edited, or the permission change wasn't saved. Action: on the exact token pasted in engine/.env,
+confirm Repository permissions → Issues → Read and write, then re-verify by commenting/closing #5
+(#5 stays open until then). Demo project untouched; verification servers torn down. Uncommitted:
+the realtime DELETE-binding fix in dashboard/src/lib/realtime.ts.
+---
+## Current State — 2026-09-27 — Mohammed + Buffy (post-rehearsal verification pass)
+Post-Day-6 closeout per the remaining-open-items list (user-approved deviations from the freeze:
+one code change — the 503 retry — plus the real GitHub-issue leg). **Gemini 503 flap FIXED**:
+`reasoning.answer_prompt` now retries transient provider errors (503/502/500/504/429/timeout/connection,
+2 retries, ~1s/2s backoff) while non-transient errors (bad key etc.) fail fast unchanged — the demo's
+only flaky beat self-heals; pinned by new `test_day3` checks (classifier units + "exactly 3 attempts on
+flap, 1 on hard error" endpoint tests). **GitHub-issue leg PROVEN LIVE**: the engine's real
+`create_conflict_issue` path filed [issue #5](https://github.com/themdmohsin/Scaffold/issues/5)
+(conflicting-shape finding, deterministic body). **Blocked on three user-side items:**
+(1) **Supabase DB password mismatch** — `DATABASE_URL` in engine/.env gets `password authentication
+failed for user "postgres"` (pooler circuit-breaker trips on retry bursts); Day 5/6 verification ran on
+the Docker rig, so Supabase was never re-tested after a password rotation. Fix: reset the DB password in
+Supabase (Settings → Database) and update `DATABASE_URL`, then re-run all suites (day2/3/4b/5) — they
+are written for the real DB and were NOT re-run in this pass (retry change verified by direct
+invocation instead). (2) **Fine-grained PAT permissions incomplete** — token creates issues (201) but
+is denied comment/close/label (403 "Resource not accessible by personal access token"), so #5 is still
+OPEN: regenerate the PAT with Issues: Read and write (or use a classic PAT with repo scope), then close
+#5 (or close it manually) — the label `scaffold-conflict` self-creates on the next real conflict once
+the token can. (3) **Supabase realtime verification pending** — `dashboard/.env` still has no
+`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY`; realtime leg (cross-tab push without interaction) runs as
+soon as they're added. Demo state untouched; demo project still pristine.
+---
 ## Current State — 2026-09-27 — Prabhanjan (Day 6 rehearsal complete — 3/3 PASS, main is submission-ready)
 
 Day 6 (Rehearsal & Buffer) is done per build plan §2: nothing new was built —

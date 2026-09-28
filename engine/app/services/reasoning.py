@@ -13,6 +13,7 @@ overridable via SCAFFOLD_LLM_MODEL / SCAFFOLD_EMBED_MODEL (engine/.env, optional
 
 import json
 import re
+import time
 
 from litellm import completion, embedding
 
@@ -33,6 +34,41 @@ def embed_model() -> str:
 
 class LlmUnavailableError(RuntimeError):
     """Raised when the team LLM key is missing or the provider call fails."""
+
+
+# Gemini free-tier flaps (503/429/timeout) were the demo's only known flaky beat.
+_RETRYABLE_TOKENS = (
+    "503", "502", "500", "504", "429", "service unavailable", "rate limit",
+    "overloaded", "timeout", "timed out", "connection",
+)
+_RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for provider-side hiccups worth retrying; deterministic check (rule #3)."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in _RETRYABLE_STATUS:
+        return True
+    msg = str(exc).lower()
+    return any(tok in msg for tok in _RETRYABLE_TOKENS)
+
+
+def _completion_with_retry(**kwargs):
+    """answer_prompt's completion call, retried on transient provider errors.
+
+    Two retries (~1s/2s backoff) absorb the free-tier 503 flaps; anything
+    non-transient re-raises immediately so callers keep their exact failure
+    semantics (502 path unchanged).
+    """
+    delay = 1.0
+    for attempt in range(3):
+        try:
+            return completion(**kwargs)
+        except Exception as exc:
+            if attempt == 2 or not _is_transient(exc):
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 def _key() -> str:
@@ -130,7 +166,7 @@ def answer_prompt(context_block: str, prompt: str) -> dict:
     afterwards (availability.py). This function stays LLM-only and never decides
     what is valid (repo rule #2).
     """
-    resp = completion(
+    resp = _completion_with_retry(
         model=chat_model(),
         messages=[
             {"role": "system", "content": _ANSWER_SYSTEM},
