@@ -73,7 +73,7 @@ live Supabase — all green, engine untouched otherwise.
 **Still open / not attempted this session:**
 - GitHub PAT still lacks Issues:read-write on themdmohsin/Scaffold — issue #5 stays open (user-side, per repo owner's GitHub settings — not something an agent session can fix).
 - The two-real-laptops pass (`docs/day5-integration-runbook.md`) needs a second physical/VM machine — only one machine was available this session; the single-host equivalents (this session's plugin proof + the 2026-09-26 dry-run) are the closest available substitute.
-- `day7-mk-plugin-verification` is pushed but not yet PR'd as of this entry — open the PR into `main` before doing anything else.
+- `day7-mk-plugin-verification` is pushed and PR #8 into `main` is open as of this entry — merge it before starting new work.
 - The pre-existing `mcp_sdk_interop.py` exit-code flake and the vendored-SDK `npm run typecheck` failure are real but out of scope (not caused by, or fixable via, this repo's own code) — noted so nobody re-investigates them as new regressions.
 
 ---
