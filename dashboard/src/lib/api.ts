@@ -12,13 +12,38 @@ export interface ProjectInfo {
   deadline: string | null;
 }
 
+export type TaskStatus = "todo" | "in_progress" | "review" | "done";
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
+
+export interface TaskDependencyRef {
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
+
 export interface Task {
   id: string;
   title: string;
-  status: "todo" | "in_progress" | "done";
+  status: TaskStatus;
   owner_id: string | null;
   due_at: string | null;
   created_at: string;
+  // Phase 2 additive fields — absent-safe defaults for older engines.
+  description?: string | null;
+  priority?: TaskPriority;
+  blocked?: boolean;
+  created_by?: string | null;
+  completed_at?: string | null;
+  dependencies?: TaskDependencyRef[];
+  blocked_by_dependencies?: TaskDependencyRef[];
+  is_blocked?: boolean;
+}
+
+export interface UserInfo {
+  id: string;
+  project_id: string | null;
+  name: string;
+  role: string | null;
 }
 
 export interface Decision {
@@ -44,6 +69,8 @@ export interface BlockerInfo {
   description: string | null;
   resolved: boolean;
   created_at: string;
+  // Additive — present once the engine's blockers query joins task_id through.
+  task_id?: string | null;
 }
 
 export interface EventInfo {
@@ -63,6 +90,9 @@ export interface ContextSummary {
   blockers?: BlockerInfo[];
   recent_events?: EventInfo[];
   generated_at: string;
+  // Phase 2 additive keys.
+  task_counts?: { todo: number; in_progress: number; review: number; done: number; blocked: number };
+  open_conflicts?: number;
 }
 
 export interface ReasonResponse {
@@ -88,13 +118,45 @@ export const fetchContext = (projectId: string) => api<ContextSummary>(`/project
 export const fetchTasks = (projectId: string) => api<Task[]>(`/projects/${projectId}/tasks`);
 export const fetchDecisions = (projectId: string) => api<Decision[]>(`/projects/${projectId}/decisions`);
 export const fetchContracts = (projectId: string) => api<Contract[]>(`/projects/${projectId}/contracts`);
+export const fetchUsers = (projectId: string) => api<UserInfo[]>(`/projects/${projectId}/users`);
 
-export function createTask(projectId: string, body: { title: string; owner_id?: string | null; due_at?: string | null }) {
+export interface TaskCreateBody {
+  title: string;
+  owner_id?: string | null;
+  due_at?: string | null;
+  description?: string | null;
+  priority?: TaskPriority;
+  created_by?: string | null;
+  dependencies?: string[];
+}
+
+export function createTask(projectId: string, body: TaskCreateBody) {
   return api<Task>(`/projects/${projectId}/tasks`, { method: "POST", body: JSON.stringify(body) });
 }
 
-export function patchTask(projectId: string, taskId: string, body: { status?: Task["status"]; owner_id?: string | null }) {
+export interface TaskUpdateBody {
+  status?: TaskStatus;
+  owner_id?: string | null;
+  title?: string;
+  description?: string | null;
+  priority?: TaskPriority;
+  blocked?: boolean;
+  blocker_reason?: string | null;
+}
+
+export function patchTask(projectId: string, taskId: string, body: TaskUpdateBody) {
   return api<Task>(`/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function addDependency(projectId: string, taskId: string, dependsOnTaskId: string) {
+  return api<Task>(`/projects/${projectId}/tasks/${taskId}/dependencies`, {
+    method: "POST",
+    body: JSON.stringify({ depends_on_task_id: dependsOnTaskId }),
+  });
+}
+
+export function removeDependency(projectId: string, taskId: string, dependsOnTaskId: string) {
+  return api<Task>(`/projects/${projectId}/tasks/${taskId}/dependencies/${dependsOnTaskId}`, { method: "DELETE" });
 }
 
 export function reason(projectId: string, prompt: string) {

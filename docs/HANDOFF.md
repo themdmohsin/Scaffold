@@ -1,4 +1,40 @@
 # HANDOFF
+## Current State — 2026-09-30 — Buffy (Developer A, Phase 2 Project Control Center COMPLETE on branch `feature/project-control-center`, uncommitted)
+
+The COORDINATE layer's task board is built end-to-end on this branch (DB → API → UI → tests), docs
+changelog entries included. **Verified on hardware this session**: `python -m tests.test_phase2`
+43/43 (incl. migration idempotency + teardown), regressions green — test_day2 31, test_day3 35,
+test_day4b 25, test_day5 74 — and `cd dashboard && npm run build` clean (tsc + vite).
+
+What's new (all ADDITIVE; frozen routes/shapes byte-identical, pinned by test_phase2):
+- DB (`engine/app/db/migrate_phase2.sql`, auto-applied at startup after migrate_day3.sql): tasks gains
+  `description/priority/blocked/created_by/completed_at` + status CHECK widened with `'review'`;
+  blockers + task_dependencies join the supabase_realtime publication.
+- API: tasks GET/POST/PATCH gain additive fields (`dependencies`, `blocked_by_dependencies`,
+  `is_blocked`, priority, blocked, …); new `POST/DELETE /projects/:id/tasks/:task_id/dependencies`,
+  `GET /projects/:id/users` (read-only roster); `GET /context` gains `task_counts` (incl. review/blocked)
+  and `open_conflicts` (blockers with task_id NULL). Manual blocked ⇄ blockers row is upsert/resolve
+  with dedupe. New events: task_status_changed/completed/assigned/priority_changed/blocked/unblocked/
+  dependency_added/dependency_removed (next to the frozen task_created/task_updated).
+- Dashboard: Overview strip (health + counts + progress), 4-column TaskBoard (TODO/IN PROGRESS/REVIEW/
+  DONE) with create + advance, TaskDetail drawer (edit/assign/priority/block+reason/dependencies),
+  ActiveWork, BlockersPanel (task blockers vs contract conflicts), ActivityFeed, realtime now covers
+  blockers + task_dependencies. New files: components/{Overview,TaskBoard,TaskDetail,ActiveWork,
+  BlockersPanel,ActivityFeed}.tsx, lib/format.ts; modified: App.tsx, lib/api.ts, lib/realtime.ts, index.css.
+- No new env vars; no secrets touched.
+
+Known limitations: no cross-project task scoping UI beyond URL project_id (API enforces scoping);
+dependency cycles are not rejected server-side (display-only impact, is_blocked computed per edge);
+ActiveWork derives "who's working" from tasks+events (agent-session identity is Phase 3). Uncommitted —
+suggest commit message: `feat: phase 2 project control center — task board, dependencies, blockers,
+activity, users roster, realtime + tests`.
+
+Next person should start with: `git status` on this branch (13 modified + 8 new files awaiting commit),
+run the suites above once on their machine, then pick up Phase 3 (identity/agent sessions) — ActiveWork
+was shaped to extend without rewriting.
+
+---
+
 ## Current State — 2026-09-28 — Buffy (single-host dry-run PASS; Gemini model swap; real fork session STILL unproven)
 
 Runbook dry-run on the live stack (engine 0.0.0.0:8000 + dashboard): invite → join 201,

@@ -22,15 +22,44 @@ class ProjectOut(BaseModel):
     created_at: datetime
 
 
+PRIORITY_PATTERN = "^(low|medium|high|urgent)$"
+STATUS_PATTERN = "^(todo|in_progress|review|done)$"  # 'review' added Phase 2
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1)
     owner_id: uuid.UUID | None = None
     due_at: datetime | None = None
+    # Phase 2 additions — all optional, all additive to the frozen shape.
+    description: str | None = None
+    priority: str = Field(default="medium", pattern=PRIORITY_PATTERN)
+    created_by: uuid.UUID | None = None
+    # Convenience: create the task's dependency edges in the same call
+    # (task_dependencies rows) instead of a follow-up request per edge.
+    dependencies: list[uuid.UUID] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
-    status: str | None = Field(default=None, pattern="^(todo|in_progress|done)$")
+    status: str | None = Field(default=None, pattern=STATUS_PATTERN)
     owner_id: uuid.UUID | None = None
+    # Phase 2 additions — full task editing, priority, and the manual block switch.
+    title: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    priority: str | None = Field(default=None, pattern=PRIORITY_PATTERN)
+    blocked: bool | None = None
+    # Only read when `blocked` is being set to true: becomes the paired
+    # blockers row's description so the Blockers panel shows a reason.
+    blocker_reason: str | None = None
+
+
+class DependencyCreate(BaseModel):
+    depends_on_task_id: uuid.UUID
+
+
+class TaskDependencyOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    status: str
 
 
 class TaskOut(BaseModel):
@@ -43,3 +72,23 @@ class TaskOut(BaseModel):
     owner_id: uuid.UUID | None
     due_at: datetime | None
     created_at: datetime
+    # Phase 2 additions.
+    description: str | None = None
+    priority: str = "medium"
+    blocked: bool = False
+    created_by: uuid.UUID | None = None
+    completed_at: datetime | None = None
+    # Computed, not columns: the tasks this one depends on, and — of those —
+    # the ones still incomplete ("Blocked by: <title>" in the UI).
+    dependencies: list[TaskDependencyOut] = Field(default_factory=list)
+    blocked_by_dependencies: list[TaskDependencyOut] = Field(default_factory=list)
+    is_blocked: bool = False
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    name: str
+    role: str | None

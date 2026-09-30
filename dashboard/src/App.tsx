@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createTask,
+  addDependency,
+  removeDependency,
   fetchContext,
   fetchContracts,
   fetchDecisions,
   fetchTasks,
+  fetchUsers,
   patchTask,
   reason,
   type ContextSummary,
@@ -12,8 +15,18 @@ import {
   type Decision,
   type ReasonResponse,
   type Task,
+  type TaskStatus,
+  type TaskUpdateBody,
+  type UserInfo,
 } from "./lib/api";
 import { subscribeToProject, type RealtimeHandle } from "./lib/realtime";
+import { timeAgo } from "./lib/format";
+import Overview from "./components/Overview";
+import TaskBoard from "./components/TaskBoard";
+import TaskDetail from "./components/TaskDetail";
+import ActiveWork from "./components/ActiveWork";
+import BlockersPanel from "./components/BlockersPanel";
+import ActivityFeed from "./components/ActivityFeed";
 
 type Phase =
   | { kind: "idle" }
@@ -24,26 +37,9 @@ type Phase =
 interface ProjectData {
   context: ContextSummary;
   tasks: Task[];
+  users: UserInfo[];
   decisions: Decision[];
   contracts: Contract[];
-}
-
-const COLUMNS: { status: Task["status"]; label: string }[] = [
-  { status: "todo", label: "To do" },
-  { status: "in_progress", label: "In progress" },
-  { status: "done", label: "Done" },
-];
-
-function nextStatus(s: Task["status"]): Task["status"] {
-  return s === "todo" ? "in_progress" : s === "in_progress" ? "done" : "todo";
-}
-
-function timeAgo(iso: string): string {
-  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (secs < 60) return "just now";
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 export default function App() {
@@ -51,31 +47,32 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [live, setLive] = useState<string>("");
   const [busyTask, setBusyTask] = useState<string | null>(null);
-  const [newTitle, setNewTitle] = useState("");
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [savingTask, setSavingTask] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [asking, setAsking] = useState(false);
-  // Tasks reuse the API type: they carry validated owner_id/due_at (Day 5).
   const [answer, setAnswer] = useState<{ text: string; tasks: ReasonResponse["suggested_tasks"] } | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
   const rtRef = useRef<RealtimeHandle | null>(null);
   const pidRef = useRef<string>("");
 
   const load = useCallback(async (id: string) => {
-    const [context, tasks, decisions, contracts] = await Promise.all([
+    const [context, tasks, users, decisions, contracts] = await Promise.all([
       fetchContext(id),
       fetchTasks(id),
+      fetchUsers(id),
       fetchDecisions(id),
       fetchContracts(id),
     ]);
-    return { context, tasks, decisions, contracts };
+    return { context, tasks, users, decisions, contracts };
   }, []);
 
   const join = useCallback(
     async (id: string) => {
       setPhase({ kind: "loading" });
-      // Every mutation (ask/addSuggested/addTask/moveTask) targets pidRef —
-      // leaving it empty made them all POST to /projects//… (404) while reads
-      // still worked, so the dashboard looked alive and every button was dead.
+      // Every mutation targets pidRef — leaving it empty made them all POST to
+      // /projects//… (404) while reads still worked, so the dashboard looked
+      // alive with every button dead.
       pidRef.current = id;
       try {
         const data = await load(id);
@@ -92,7 +89,7 @@ export default function App() {
     if (phase.kind !== "ok") return;
     const id = pidRef.current;
     rtRef.current?.unsubscribe();
-    const handle = subscribeToProject(id, () => void join(id).then(() => setPhase((p) => (p.kind === "ok" ? p : p))), (status) =>
+    const handle = subscribeToProject(id, () => void refresh(), (status) =>
       setLive(status === "SUBSCRIBED" ? "live" : status.toLowerCase()),
     );
     rtRef.current = handle;
@@ -101,15 +98,26 @@ export default function App() {
       handle?.unsubscribe();
       rtRef.current = null;
     };
-  }, [phase.kind, join]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase.kind]);
 
-  async function moveTask(task: Task) {
+  async function refresh() {
+    const id = pidRef.current;
+    if (!id) return;
+    try {
+      const data = await load(id);
+      setPhase({ kind: "ok", data });
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  async function moveTask(task: Task, status: TaskStatus) {
     const id = pidRef.current;
     setBusyTask(task.id);
     try {
-      await patchTask(id, task.id, { status: nextStatus(task.status) });
-      const data = await load(id);
-      setPhase({ kind: "ok", data });
+      await patchTask(id, task.id, { status });
+      await refresh();
     } catch (err) {
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -117,15 +125,44 @@ export default function App() {
     }
   }
 
-  async function addTask() {
-    const title = newTitle.trim();
-    if (!title) return;
+  async function createNewTask(title: string) {
     const id = pidRef.current;
     try {
       await createTask(id, { title });
-      setNewTitle("");
-      const data = await load(id);
-      setPhase({ kind: "ok", data });
+      await refresh();
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  async function saveTask(taskId: string, patch: TaskUpdateBody) {
+    const id = pidRef.current;
+    setSavingTask(true);
+    try {
+      await patchTask(id, taskId, patch);
+      await refresh();
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setSavingTask(false);
+    }
+  }
+
+  async function addDep(taskId: string, dependsOnTaskId: string) {
+    const id = pidRef.current;
+    try {
+      await addDependency(id, taskId, dependsOnTaskId);
+      await refresh();
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  async function removeDep(taskId: string, dependsOnTaskId: string) {
+    const id = pidRef.current;
+    try {
+      await removeDependency(id, taskId, dependsOnTaskId);
+      await refresh();
     } catch (err) {
       setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
@@ -138,8 +175,7 @@ export default function App() {
     try {
       await createTask(id, { title: task.title, owner_id: task.owner_id, due_at: task.due_at });
       setAnswer((a) => (a ? { ...a, tasks: a.tasks.filter((t) => t.title !== task.title) } : a));
-      const data = await load(id);
-      setPhase({ kind: "ok", data });
+      await refresh();
     } catch (err) {
       setAskError(err instanceof Error ? err.message : String(err));
     }
@@ -165,14 +201,17 @@ export default function App() {
     rtRef.current = null;
     setLive("");
     setAnswer(null);
+    setSelectedTaskId(null);
     pidRef.current = "";
     setPhase({ kind: "idle" });
   }
 
+  const selectedTask = phase.kind === "ok" ? phase.data.tasks.find((t) => t.id === selectedTaskId) : undefined;
+
   return (
     <main className="app">
       <h1>Scaffold</h1>
-      <p className="tagline">Shared awareness for AI coding teams.</p>
+      <p className="tagline">Multiple agents. Multiple workspaces. One project brain.</p>
 
       {phase.kind !== "ok" && (
         <div className="form">
@@ -191,9 +230,7 @@ export default function App() {
       {phase.kind === "error" && <section className="status error">⚠ {phase.message}</section>}
 
       {phase.kind === "idle" && (
-        <section className="status">
-          Join a project to see its live task board, decision log and API contracts.
-        </section>
+        <section className="status">Join a project to see its live control center.</section>
       )}
 
       {phase.kind === "ok" && (
@@ -205,50 +242,26 @@ export default function App() {
                 <span className={`live live-${live === "live" ? "on" : "off"}`}>● {live || "connecting"}</span>
               </h2>
               {phase.data.context.project.goal && <p className="goal">{phase.data.context.project.goal}</p>}
-              <p className="counts">
-                {phase.data.context.tasks.todo} todo · {phase.data.context.tasks.in_progress} in progress ·{" "}
-                {phase.data.context.tasks.done} done
-              </p>
             </div>
             <button onClick={leave}>Leave</button>
           </header>
 
-          <section className="board">
-            {COLUMNS.map((col) => (
-              <div className="column" key={col.status}>
-                <h3>
-                  {col.label} <span className="pill">{phase.data.tasks.filter((t) => t.status === col.status).length}</span>
-                </h3>
-                {col.status === "todo" && (
-                  <div className="add-task">
-                    <input
-                      placeholder="New task title"
-                      value={newTitle}
-                      onChange={(e) => setNewTitle(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && addTask()}
-                    />
-                    <button onClick={addTask} disabled={!newTitle.trim()}>
-                      +
-                    </button>
-                  </div>
-                )}
-                {phase.data.tasks
-                  .filter((t) => t.status === col.status)
-                  .map((t) => (
-                    <button
-                      key={t.id}
-                      className={`card card-${t.status}`}
-                      onClick={() => moveTask(t)}
-                      disabled={busyTask === t.id}
-                      title="Click to advance status"
-                    >
-                      <span>{t.title}</span>
-                      {t.due_at && <small>due {new Date(t.due_at).toLocaleDateString()}</small>}
-                    </button>
-                  ))}
-              </div>
-            ))}
-          </section>
+          <Overview context={phase.data.context} />
+
+          <TaskBoard
+            tasks={phase.data.tasks}
+            users={phase.data.users}
+            busyTask={busyTask}
+            onCreate={createNewTask}
+            onMove={(task, status) => moveTask(task, status)}
+            onSelect={setSelectedTaskId}
+          />
+
+          <ActiveWork users={phase.data.users} tasks={phase.data.tasks} recentEvents={phase.data.context.recent_events ?? []} />
+
+          <BlockersPanel blockers={phase.data.context.blockers ?? []} tasks={phase.data.tasks} />
+
+          <ActivityFeed events={phase.data.context.recent_events ?? []} />
 
           <section className="ask">
             <h3>Ask Scaffold</h3>
@@ -281,20 +294,6 @@ export default function App() {
           </section>
 
           <section className="panel">
-            <h3>Conflicts &amp; blockers</h3>
-            {(phase.data.context.blockers?.length ?? 0) === 0 && <p className="empty">No open blockers — agents are in sync.</p>}
-            {(phase.data.context.blockers ?? []).map((b) => (
-              <div className="decision conflict" key={b.id}>
-                <p>⚠ {b.description}</p>
-                <small className="when">{timeAgo(b.created_at)}</small>
-              </div>
-            ))}
-            {(phase.data.context.recent_events ?? []).some((e) => e.type === "conflict_flagged") && (
-              <p className="empty">conflict_flagged event in the recent feed — see the blocker above.</p>
-            )}
-          </section>
-
-          <section className="panel">
             <h3>Decision log</h3>
             {phase.data.decisions.length === 0 && <p className="empty">No decisions logged yet.</p>}
             {phase.data.decisions.map((d) => (
@@ -317,6 +316,19 @@ export default function App() {
               ))}
             </div>
           </section>
+
+          {selectedTask && (
+            <TaskDetail
+              task={selectedTask}
+              users={phase.data.users}
+              allTasks={phase.data.tasks}
+              saving={savingTask}
+              onClose={() => setSelectedTaskId(null)}
+              onSave={(patch) => saveTask(selectedTask.id, patch)}
+              onAddDependency={(depId) => addDep(selectedTask.id, depId)}
+              onRemoveDependency={(depId) => removeDep(selectedTask.id, depId)}
+            />
+          )}
         </>
       )}
     </main>

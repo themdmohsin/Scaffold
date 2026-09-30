@@ -28,6 +28,9 @@ CONTEXT_CONTRACT = {
     "blockers": [],
     "recent_events": [],
     "generated_at": "ISO-8601",
+    # Phase 2 additive keys — see build_context below.
+    "task_counts": {"todo": 0, "in_progress": 0, "review": 0, "done": 0, "blocked": 0},
+    "open_conflicts": 0,
 }
 
 
@@ -51,6 +54,18 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
         .order_by(Task.created_at.asc())
         .limit(10)
     ).all()
+
+    blocked_count = db.scalar(
+        select(func.count()).where(Task.project_id == project_id, Task.blocked.is_(True))
+    ) or 0
+    # Conflicts are contract-shape findings (task_id null); task-level blockers
+    # (task_id set, from the manual block switch) are surfaced via `blockers`
+    # below and via each task's own is_blocked/blocked_by_dependencies.
+    open_conflicts = db.scalar(
+        select(func.count()).where(
+            Blocker.project_id == project_id, Blocker.resolved.is_(False), Blocker.task_id.is_(None)
+        )
+    ) or 0
 
     return {
         "project": {
@@ -93,6 +108,9 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
                 "description": b.description,
                 "resolved": b.resolved,
                 "created_at": b.created_at.isoformat(),
+                # Phase 2 additive: lets the dashboard show "related task" and
+                # split task-level blockers from contract conflicts (task_id null).
+                "task_id": str(b.task_id) if b.task_id else None,
             }
             for b in db.scalars(
                 select(Blocker)
@@ -116,6 +134,15 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
             ).all()
         ],
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        # Phase 2 (additive): richer counts for the project-overview panel.
+        "task_counts": {
+            "todo": counts.get("todo", 0),
+            "in_progress": counts.get("in_progress", 0),
+            "review": counts.get("review", 0),
+            "done": counts.get("done", 0),
+            "blocked": blocked_count,
+        },
+        "open_conflicts": open_conflicts,
     }
 
 

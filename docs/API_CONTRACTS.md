@@ -27,29 +27,72 @@ Returns the always-on summary (master doc §7). Shape stays frozen; contents fil
   "active_tasks": [ /* up to 10 non-done tasks: { id, title, status, owner_id, due_at } */ ],
   "recent_decisions": [ /* newest first, max 5: { id, text, created_at } — populated Day 3 */ ],
   "relevant_contracts": [ /* { route, method } — populated Day 3 */ ],
-  "generated_at": "ISO-8601"
+  "blockers": [ /* Day 5 additive: open blockers, newest first, max 10: {id, description, resolved, created_at, task_id} — task_id added Phase 2, null for contract-conflict blockers */ ],
+  "recent_events": [ /* Day 5 additive: newest 8 events */ ],
+  "generated_at": "ISO-8601",
+  "task_counts": { "todo": 0, "in_progress": 0, "review": 0, "done": 0, "blocked": 0 }, // Phase 2 additive
+  "open_conflicts": 0 // Phase 2 additive — unresolved blockers with no task_id (contract conflicts)
 }
 ```
 `404` if the project doesn't exist.
 
 ### `GET /projects/:id/tasks`
-`200 [ { "id", "title", "status", "owner_id", "due_at", "created_at" } ]` — ordered by `created_at` ascending. `404` unknown project.
+`200 [ TaskOut ]` — ordered by `created_at` ascending. `404` unknown project. `TaskOut` (Phase 2 additive fields marked):
+```jsonc
+{
+  "id", "title", "status", "owner_id", "due_at", "created_at",           // frozen Day 1
+  "description", "priority", "blocked", "created_by", "completed_at",    // Phase 2 additive
+  "dependencies": [ { "id", "title", "status" } ],                       // Phase 2 additive — tasks this one depends on
+  "blocked_by_dependencies": [ { "id", "title", "status" } ],            // Phase 2 additive — subset of the above not yet done
+  "is_blocked": false                                                    // Phase 2 additive — blocked OR blocked_by_dependencies non-empty
+}
+```
 
 ### `POST /projects/:id/tasks`
 ```jsonc
 // request
-{ "title": "required", "owner_id": "optional uuid", "due_at": "optional ISO-8601" }
-// response 201 — the full task object (same shape as GET list items)
+{
+  "title": "required",
+  "owner_id": "optional uuid",
+  "due_at": "optional ISO-8601",
+  "description": "optional",                 // Phase 2 additive
+  "priority": "low|medium|high|urgent",      // Phase 2 additive — default 'medium'
+  "created_by": "optional uuid",             // Phase 2 additive
+  "dependencies": ["optional uuid", "..."]   // Phase 2 additive — creates task_dependencies rows
+}
+// response 201 — the full TaskOut object
 ```
-`404` unknown project, `400` missing title or invalid `owner_id`/`due_at`. Writes an `events` row of type `task_created`.
+`404` unknown project, `400` missing title, invalid `owner_id`/`created_by`/`priority`/`due_at`, or a `dependencies` entry that isn't a task on this project (or is the task itself). Writes an `events` row of type `task_created` (unchanged payload); additionally writes `task_assigned` when `owner_id` is set.
 
 ### `PATCH /projects/:id/tasks/:task_id`
 ```jsonc
-// request — one or both of
-{ "status": "todo" | "in_progress" | "done", "owner_id": "optional uuid" }
-// response 200 — the full updated task object
+// request — any of
+{
+  "status": "todo" | "in_progress" | "review" | "done",  // 'review' added Phase 2
+  "owner_id": "optional uuid",
+  "title": "optional",                 // Phase 2 additive — full edit
+  "description": "optional",           // Phase 2 additive
+  "priority": "low|medium|high|urgent",// Phase 2 additive
+  "blocked": true | false,             // Phase 2 additive — manual block switch
+  "blocker_reason": "optional"         // Phase 2 additive — only read when blocked:true; becomes the paired blocker's description
+}
+// response 200 — the full updated TaskOut object
 ```
-`404` unknown project or task, `400` invalid status value. Writes an `events` row of type `task_updated`.
+`404` unknown project or task, `400` invalid status/priority value. Writes an `events` row of type `task_updated` (unchanged payload shape: `task_id` + the changed fields). Phase 2 additionally writes narrower events for the activity feed when the corresponding field changes: `task_status_changed` (`{task_id, title, from, to}`), `task_completed` (on transition to `done`), `task_assigned` (`{task_id, title, owner_id}`), `task_priority_changed` (`{task_id, title, from, to}`), `task_blocked` / `task_unblocked` (`{task_id, title, reason?}`). Setting `blocked: true` upserts an open `blockers` row (`task_id` set, deduped against an existing open one); setting `blocked: false` resolves that project's open blockers for the task.
+
+### `POST /projects/:id/tasks/:task_id/dependencies` *(Phase 2 addition)*
+```jsonc
+// request
+{ "depends_on_task_id": "required uuid" }
+// response 201 — the full updated TaskOut object (dependencies/blocked_by_dependencies reflect the new edge)
+```
+`404` unknown project/task, `400` if `depends_on_task_id` is the task itself or not a task on this project. Idempotent (adding an existing edge is a no-op). Writes an `events` row of type `task_dependency_added`.
+
+### `DELETE /projects/:id/tasks/:task_id/dependencies/:depends_on_task_id` *(Phase 2 addition)*
+`200` — the full updated TaskOut object. Idempotent (removing a missing edge is a no-op). Writes an `events` row of type `task_dependency_removed`.
+
+### `GET /projects/:id/users` *(Phase 2 addition)*
+`200 [ { "id", "project_id", "name", "role" } ]` — ordered by `name` ascending. `404` unknown project. Read-only; the `users` table and its write paths (join flow) are unchanged. Powers the dashboard's assignee picker and "Active work" names.
 
 ### `GET /projects/:id/decisions`
 `200 [ { "id", "text", "reasoning", "made_by", "created_at" } ]` — newest first. *(Route frozen Day 1; implemented Day 2.)*
@@ -138,6 +181,7 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 
 ## Changelog (append-only after Day 1)
 
+- 2026-09-29 — Phase 2 (Project Control Center, Developer A, branch `feature/project-control-center`): the task board + coordination layer. `GET/POST /projects/:id/tasks` and `PATCH /projects/:id/tasks/:task_id` gain ADDITIVE fields only (`description`, `priority`, `blocked`, `created_by`, `completed_at`, `dependencies`, `blocked_by_dependencies`, `is_blocked`); every Day 1 field on those routes is byte-identical, and `task_created`/`task_updated` events keep their frozen payload shape. `status` CHECK widened to add `'review'` (`todo|in_progress|review|done`). New routes: `POST`/`DELETE /projects/:id/tasks/:task_id/dependencies[/:depends_on_task_id]` (task_dependencies CRUD, idempotent) and `GET /projects/:id/users` (read-only roster for the assignee picker). `GET /projects/:id/context` gains two ADDITIVE keys: `task_counts` (todo/in_progress/review/done/blocked) and `open_conflicts` (unresolved blockers with no `task_id` — i.e. contract-shape conflicts, distinct from task-level blockers). New event types for the activity feed (all additional to, never replacing, the frozen `task_created`/`task_updated`): `task_status_changed`, `task_completed`, `task_assigned`, `task_priority_changed`, `task_blocked`, `task_unblocked`, `task_dependency_added`, `task_dependency_removed`. No env var changes. No existing route, MCP tool, or event type removed or renamed.
 - 2026-09-26 — Day 5 round 6 (full-repo audit): `POST /projects/:id/github-webhook` now ingests ONLY pushes to the default branch (`refs/heads/main`/`master`); feature-branch pushes are acknowledged with `{ok, processed: [], skipped: {branch, reason}}` so WIP routes never become contracts or fire false conflicts (payloads without `ref` — older fixtures — are treated as main, backwards compatible). Removed the stray undeclared `GET /api/test/scaffold-v2` route (was never in the frozen contract list). No other route/shape changes.
 - 2026-09-26 — Day 5 (Person A, task assignment + invites): `/reason` may now return assignments. The engine computes a deterministic TEAM ROSTER (open-task count per user via SQL GROUP BY, hours-until-deadline from the project deadline — never LLM-guessed) into the `/reason` context, and every suggested task is re-validated AFTER the LLM: owner_ids not on the roster are cleared, past/unparseable due_at cleared, due_at beyond the project deadline clamped. Response shape unchanged (`{answer, suggested_tasks:[{title, owner_id, due_at}]}`) plus one ADDITIVE key `assignment_notes` (present only when something was corrected). New routes: `POST /projects/{id}/invite` → `{invite_url, code, expires_at_epoch}` (stateless `project.expiry.hmac` code signed with GITHUB_WEBHOOK_SECRET, 7-day TTL) and `POST /projects/join` `{code, name, role?}` → 201 `{user_id, project_id, name, role}` (creates the users row + `teammate_joined` event) — the first API that creates users. Join is IDEMPOTENT per name: re-joining with the same name (case-insensitive, whitespace-collapsed) returns 200 `{..., "existing": true}` with the SAME user_id instead of planting a duplicate row; blank names → 400; `role` is whitespace-collapsed at the boundary (a newline in a name OR role would forge a line inside the LLM TEAM ROSTER prompt). No DB schema changes. No new env vars (invites reuse GITHUB_WEBHOOK_SECRET; 503 if unset). `GET /projects/:id/context` gains two ADDITIVE keys (all pre-existing keys byte-identical): `blockers` — open blockers, newest first, ≤10, `{id, description, resolved, created_at}` — and `recent_events` — newest 8, `{id, type, payload, created_at}` — so the conflict moment (event + blocker) is visible through the endpoint the dashboard and MCP `get_project_context()` already poll, with no new route. Hardware-verified (2026-09-26) against a disposable local Postgres+pgvector rig (`scaffold-day5-pg`, port 5433): `python -m tests.test_day5` 74/74 checks — pure units PLUS the DB-backed route legs (that run caught and fixed a real API regression: new joins had silently started returning 200 instead of the frozen 201). `test_day2` 30/30 and `test_day4b` 25/25 re-verified on the same rig; `/reason` without `SCAFFOLD_TEAM_LLM_KEY` confirmed to degrade 503 fail-open. The live-LLM assignment path has now also run for real (`python -m app.scripts.live_reason_check`: project → invite → join → roster → Gemini → suggestions with roster-valid owner_ids; that run exposed Gemini 3 thinking tokens exhausting `max_tokens=800` and truncating the JSON mid-string — raised to 2000, pinned by a `test_day5` source check).
 - 2026-09-23 — Day 1: routes, MCP tool names, env vars frozen per build plan §1. Day 1 additions: `POST /projects`, `DATABASE_URL` (engine), `SCAFFOLD_ENGINE_URL` (plugin). Implemented on Day 1: `/health`, `POST /projects`, `/context`, tasks CRUD. Deferred to Day 2: decisions, contracts, webhook. Day 3: `/reason`. Plugin hook API section appended from live docs verification.

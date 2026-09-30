@@ -37,10 +37,15 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | id | UUID PK | default `gen_random_uuid()` |
 | project_id | UUID → projects(id) | |
 | title | TEXT NOT NULL | |
-| status | TEXT | default `'todo'`, CHECK in (`'todo'`,`'in_progress'`,`'done'`) |
-| owner_id | UUID → users(id) | |
+| status | TEXT | default `'todo'`, CHECK in (`'todo'`,`'in_progress'`,`'review'`,`'done'`) — `'review'` added Phase 2 |
+| owner_id | UUID → users(id) | the assignee |
 | due_at | TIMESTAMPTZ | |
 | created_at | TIMESTAMPTZ | default `now()` |
+| description | TEXT | Phase 2 addition — nullable |
+| priority | TEXT | Phase 2 addition — default `'medium'`, CHECK in (`'low'`,`'medium'`,`'high'`,`'urgent'`) |
+| blocked | BOOLEAN | Phase 2 addition — default `false`; manual block switch (independent of dependency-derived blocking) |
+| created_by | UUID → users(id) | Phase 2 addition — nullable |
+| completed_at | TIMESTAMPTZ | Phase 2 addition — nullable; set when status becomes `'done'`, cleared otherwise |
 
 ### task_dependencies
 | column | type | notes |
@@ -125,9 +130,17 @@ CREATE INDEX idx_blockers_project  ON blockers(project_id) WHERE resolved = fals
 CREATE INDEX idx_decisions_embedding ON decisions USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX idx_contracts_embedding ON api_contracts USING hnsw (embedding vector_cosine_ops);
 -- tasks, decisions, events added to the supabase_realtime publication (migrate_day3.sql)
+
+-- Phase 2 additions (Project Control Center — migrate_phase2.sql)
+CREATE INDEX idx_tasks_project_priority ON tasks(project_id, priority);
+CREATE INDEX idx_tasks_project_blocked ON tasks(project_id) WHERE blocked = true;
+CREATE INDEX idx_task_dependencies_depends_on ON task_dependencies(depends_on_task_id);
+CREATE INDEX idx_blockers_project_task ON blockers(project_id, task_id);
+-- blockers, task_dependencies added to the supabase_realtime publication (migrate_phase2.sql)
 ```
 
 ## Changelog (append-only after Day 1)
 
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
 - 2026-09-24 — Day 3: additive only — nullable `embedding VECTOR(1536)` on `decisions` + `api_contracts`, two HNSW cosine indexes, `tasks`/`decisions`/`events` added to the `supabase_realtime` publication. Applied by `engine/app/db/migrate_day3.sql` (auto at engine startup, idempotent).
+- 2026-09-29 — Phase 2 (Project Control Center, Developer A): `tasks.status` CHECK widened to add `'review'` (`'todo'|'in_progress'|'review'|'done'`) — existing values untouched, this is a widening, not a rename. Additive nullable/defaulted columns on `tasks`: `description TEXT`, `priority TEXT DEFAULT 'medium'` (CHECK `'low'|'medium'|'high'|'urgent'`), `blocked BOOLEAN DEFAULT false`, `created_by UUID → users(id)`, `completed_at TIMESTAMPTZ`. Four new supporting indexes (above). `blockers` and `task_dependencies` added to the `supabase_realtime` publication (dashboard live updates for the Blockers panel and dependency chips). Applied by `engine/app/db/migrate_phase2.sql` (auto at engine startup, idempotent, chained after `migrate_day3.sql`). No tables renamed or dropped; `task_dependencies` (already frozen Day 1, previously unused by any route) is now read/written by the task routes.

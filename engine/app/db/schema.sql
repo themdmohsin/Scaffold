@@ -1,6 +1,10 @@
 -- Scaffold database schema — mirrors docs/SCHEMA.md exactly (frozen Day 1, 2026-09-23).
 -- Run this in the Supabase SQL editor (or psql) to create everything.
 -- pgvector embedding columns are added Day 3 (see docs/SCHEMA.md), not here.
+-- Phase 2 task-board columns (description/priority/blocked/created_by/completed_at,
+-- widened status CHECK) are added by engine/app/db/migrate_phase2.sql, not here —
+-- this file stays the Day 1 baseline for a brand-new database; the engine applies
+-- migrate_day3.sql and migrate_phase2.sql automatically at startup either way.
 
 CREATE TABLE projects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
