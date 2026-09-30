@@ -16,6 +16,7 @@ from app.config import settings
 _engine: Engine | None = None
 _SessionLocal: sessionmaker | None = None
 _migration_applied = False
+_phase3_migration_applied = False
 
 
 def _apply_day3_migration(engine: Engine) -> None:
@@ -37,6 +38,24 @@ def _apply_day3_migration(engine: Engine) -> None:
         print("[scaffold] day3 migration applied (pgvector + realtime publication)")
     except Exception as exc:  # noqa: BLE001 — never block boot on migration trouble
         print(f"[scaffold] day3 migration warning (continuing): {exc}")
+
+
+def _apply_phase3_migration(engine: Engine) -> None:
+    """Idempotent Phase 3 DDL (migrate_phase3.sql): agent identity columns on
+    `users`, `projects.owner_user_id`, membership status. Same non-fatal
+    boot pattern as _apply_day3_migration."""
+    global _phase3_migration_applied
+    if _phase3_migration_applied:
+        return
+    _phase3_migration_applied = True
+    sql = Path(__file__).with_name("migrate_phase3.sql").read_text(encoding="utf-8")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(sql)
+            conn.commit()
+        print("[scaffold] phase3 migration applied (team collaboration)")
+    except Exception as exc:  # noqa: BLE001 — never block boot on migration trouble
+        print(f"[scaffold] phase3 migration warning (continuing): {exc}")
 
 
 def _init() -> sessionmaker:
@@ -65,6 +84,7 @@ def _init() -> sessionmaker:
     )
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     _apply_day3_migration(_engine)
+    _apply_phase3_migration(_engine)
     return _SessionLocal
 
 

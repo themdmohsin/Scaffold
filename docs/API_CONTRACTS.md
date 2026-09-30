@@ -85,6 +85,64 @@ GitHub push/PR receiver. Signature-verified with `GITHUB_WEBHOOK_SECRET` (HMAC-S
 ```
 The ONLY route that calls an LLM for a user-facing answer (via LiteLLM, `SCAFFOLD_TEAM_LLM_KEY`, in `services/reasoning.py` only). *(Route frozen Day 1; implemented Day 3.)*
 
+## Team collaboration routes (Day 5 + Phase 3 — additive, not in the Day 1 freeze list)
+
+### `POST /projects/:id/invite` *(Day 5)*
+`201 {"invite_url", "code", "expires_at_epoch"}` — stateless `project_id.expiry.hmac` code signed with `GITHUB_WEBHOOK_SECRET`, 7-day TTL. No DB row; no invites table.
+
+### `POST /projects/join` *(Day 5)*
+```jsonc
+// request
+{ "code": "required", "name": "required", "role": "optional" }
+// response 201 (new) / 200 (idempotent re-join, same name case-insensitive)
+{ "user_id": "...", "project_id": "...", "name": "...", "role": null, "existing": false }
+```
+Creates the project's `users` row (writes `teammate_joined` event). This is Scaffold's invitation-acceptance step — see Phase 3 below for what a joined user becomes on the roster.
+
+### `GET /projects/:id/members` *(Phase 3)*
+Roster of every non-removed `users` row on the project, with a computed (not stored) activity status — see `docs/SCHEMA.md` Phase 3 entry and `engine/app/services/team.py`.
+```jsonc
+// response 200
+[{
+  "id": "...", "name": "...", "role": "backend",
+  "kind": "developer",              // 'developer' | 'agent'
+  "agent_provider": null, "agent_model": null,
+  "membership_status": "active",
+  "joined_at": "ISO-8601",
+  "current_task": { "id": "...", "title": "...", "status": "in_progress" } | null,
+  "activity_status": "ACTIVE",       // 'ACTIVE' | 'IDLE' | 'BLOCKED' | 'OFFLINE' — derived, not live presence
+  "last_activity_at": "ISO-8601" | null
+}]
+```
+
+### `PATCH /projects/:id/members/:member_id` *(Phase 3)*
+`{"role"?, "kind"?, "requesting_user_id"?}` → 200 the updated member. Owner-gated once `projects.owner_user_id` is set (403 if `requesting_user_id` isn't the owner); open otherwise. Writes `member_role_changed`.
+
+### `DELETE /projects/:id/members/:member_id` *(Phase 3)*
+`?requesting_user_id=...` → 200 `{"id", "membership_status": "removed"}`. Soft-delete (row kept for historical task ownership); 400 if `member_id` is the current project owner. Writes `member_removed`.
+
+### `POST /projects/:id/agents` *(Phase 3)*
+```jsonc
+// request
+{ "name": "required", "provider": "optional", "model": "optional", "session_id": "optional" }
+// response 201
+{ "id", "name", "kind": "agent", "agent_provider", "agent_model", "agent_session_id", "is_new" }
+```
+Registers or upserts (by project + name) an AI agent as a first-class `users` row (`kind='agent'`). Provider/model are free text — no vendor is hardcoded into the data model. Writes `agent_registered` (first call) or `agent_session_updated` (subsequent calls).
+
+### `POST /projects/:id/owner` *(Phase 3)*
+```jsonc
+// request
+{ "user_id": "required", "requesting_user_id": "optional" }
+// response 200
+{ "project_id", "owner_user_id" }
+```
+Bootstraps ownership (open, first call — no owner yet) or transfers it (`requesting_user_id` must equal the current owner, else 403). Writes `project_owner_set`.
+
+Task assignment to a member or an agent reuses the existing, frozen `tasks.owner_id` field and `PATCH /projects/:id/tasks/:task_id` route unchanged — there is no second task/assignment system; `kind` on the assigned `users` row is how the dashboard tells a developer from an agent.
+
+Authorization note: this repo has no authentication system. `requesting_user_id` is a placeholder authorization hook (compared server-side to `projects.owner_user_id`), not a verified identity — every other route in this API has the same trust model today. It becomes a real session identity once auth (e.g. Supabase Auth) is wired in.
+
 ## MCP server (Day 2 — LIVE at `/mcp`, streamable HTTP)
 The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention.
 ```
@@ -138,6 +196,7 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 
 ## Changelog (append-only after Day 1)
 
+- 2026-09-30 — Phase 3 (team collaboration, `feature/team-collaboration`): new additive routes `GET /projects/:id/members`, `PATCH /projects/:id/members/:member_id`, `DELETE /projects/:id/members/:member_id`, `POST /projects/:id/agents`, `POST /projects/:id/owner` — full shapes in the new "Team collaboration routes" section above. AI agents are first-class `users` rows (`kind='agent'`, free-text `agent_provider`/`agent_model` — no vendor hardcoded). Task assignment reuses the existing frozen `tasks.owner_id` + `PATCH /projects/:id/tasks/:task_id` — no second task/assignment system. Activity status (`ACTIVE`/`IDLE`/`BLOCKED`/`OFFLINE`) is computed deterministically in `engine/app/services/team.py` from existing tasks/decisions/events — never an LLM call, never faked live presence. `GET /projects/:id/context` gains one ADDITIVE key on `project`: `owner_user_id` (null until `POST /owner` is called). Owner-gated mutations use a placeholder `requesting_user_id` field compared to `projects.owner_user_id` — not real auth (none exists yet anywhere in this API); becomes a real session identity once auth is wired in. No changes to Day 5 invite/join (still stateless HMAC codes, no invites table). New indexes + `users` columns (`kind`, `agent_provider`, `agent_model`, `agent_session_id`, `membership_status`, `joined_at`) and `projects.owner_user_id` — see `docs/SCHEMA.md`. No new env vars. Verified: `python -m tests.test_phase3` 40/40 (offline pure units + DB-backed route legs); full regression re-run clean — `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74 (205 total, 0 failed); `dashboard && npm run build` clean (tsc + vite). New dashboard Team panel (`components/Team.tsx`) is additive/isolated — roster table, invite/join/agent-registration mini-forms, owner/role/remove actions; `App.tsx` gained one new fetch (`fetchMembers`, degrades to an empty roster against older engines) and one new panel mount.
 - 2026-09-26 — Day 5 round 6 (full-repo audit): `POST /projects/:id/github-webhook` now ingests ONLY pushes to the default branch (`refs/heads/main`/`master`); feature-branch pushes are acknowledged with `{ok, processed: [], skipped: {branch, reason}}` so WIP routes never become contracts or fire false conflicts (payloads without `ref` — older fixtures — are treated as main, backwards compatible). Removed the stray undeclared `GET /api/test/scaffold-v2` route (was never in the frozen contract list). No other route/shape changes.
 - 2026-09-26 — Day 5 (Person A, task assignment + invites): `/reason` may now return assignments. The engine computes a deterministic TEAM ROSTER (open-task count per user via SQL GROUP BY, hours-until-deadline from the project deadline — never LLM-guessed) into the `/reason` context, and every suggested task is re-validated AFTER the LLM: owner_ids not on the roster are cleared, past/unparseable due_at cleared, due_at beyond the project deadline clamped. Response shape unchanged (`{answer, suggested_tasks:[{title, owner_id, due_at}]}`) plus one ADDITIVE key `assignment_notes` (present only when something was corrected). New routes: `POST /projects/{id}/invite` → `{invite_url, code, expires_at_epoch}` (stateless `project.expiry.hmac` code signed with GITHUB_WEBHOOK_SECRET, 7-day TTL) and `POST /projects/join` `{code, name, role?}` → 201 `{user_id, project_id, name, role}` (creates the users row + `teammate_joined` event) — the first API that creates users. Join is IDEMPOTENT per name: re-joining with the same name (case-insensitive, whitespace-collapsed) returns 200 `{..., "existing": true}` with the SAME user_id instead of planting a duplicate row; blank names → 400; `role` is whitespace-collapsed at the boundary (a newline in a name OR role would forge a line inside the LLM TEAM ROSTER prompt). No DB schema changes. No new env vars (invites reuse GITHUB_WEBHOOK_SECRET; 503 if unset). `GET /projects/:id/context` gains two ADDITIVE keys (all pre-existing keys byte-identical): `blockers` — open blockers, newest first, ≤10, `{id, description, resolved, created_at}` — and `recent_events` — newest 8, `{id, type, payload, created_at}` — so the conflict moment (event + blocker) is visible through the endpoint the dashboard and MCP `get_project_context()` already poll, with no new route. Hardware-verified (2026-09-26) against a disposable local Postgres+pgvector rig (`scaffold-day5-pg`, port 5433): `python -m tests.test_day5` 74/74 checks — pure units PLUS the DB-backed route legs (that run caught and fixed a real API regression: new joins had silently started returning 200 instead of the frozen 201). `test_day2` 30/30 and `test_day4b` 25/25 re-verified on the same rig; `/reason` without `SCAFFOLD_TEAM_LLM_KEY` confirmed to degrade 503 fail-open. The live-LLM assignment path has now also run for real (`python -m app.scripts.live_reason_check`: project → invite → join → roster → Gemini → suggestions with roster-valid owner_ids; that run exposed Gemini 3 thinking tokens exhausting `max_tokens=800` and truncating the JSON mid-string — raised to 2000, pinned by a `test_day5` source check).
 - 2026-09-23 — Day 1: routes, MCP tool names, env vars frozen per build plan §1. Day 1 additions: `POST /projects`, `DATABASE_URL` (engine), `SCAFFOLD_ENGINE_URL` (plugin). Implemented on Day 1: `/health`, `POST /projects`, `/context`, tasks CRUD. Deferred to Day 2: decisions, contracts, webhook. Day 3: `/reason`. Plugin hook API section appended from live docs verification.
