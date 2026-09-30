@@ -10,6 +10,8 @@ export interface ProjectInfo {
   name: string;
   goal: string | null;
   deadline: string | null;
+  // Phase 3 additive key — absent from older engines, hence optional.
+  owner_user_id?: string | null;
 }
 
 export interface Task {
@@ -68,6 +70,81 @@ export interface ContextSummary {
 export interface ReasonResponse {
   answer: string;
   suggested_tasks: { title: string; owner_id: string | null; due_at: string | null }[];
+}
+
+// --- Phase 3 (team collaboration) additive types + calls -------------------
+// New endpoints only (see engine/app/routes/team.py); existing task/context/
+// invite calls above are untouched.
+
+export type ActivityStatus = "ACTIVE" | "IDLE" | "BLOCKED" | "OFFLINE";
+
+export interface MemberInfo {
+  id: string;
+  name: string;
+  role: string | null;
+  kind: "developer" | "agent";
+  agent_provider: string | null;
+  agent_model: string | null;
+  membership_status: "active" | "removed";
+  joined_at: string;
+  current_task: { id: string; title: string; status: Task["status"] } | null;
+  activity_status: ActivityStatus;
+  last_activity_at: string | null;
+}
+
+export interface InviteInfo {
+  invite_url: string;
+  code: string;
+  expires_at_epoch: number;
+}
+
+export const fetchMembers = (projectId: string) => api<MemberInfo[]>(`/projects/${projectId}/members`);
+
+export function createInvite(projectId: string) {
+  return api<InviteInfo>(`/projects/${projectId}/invite`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function joinProject(body: { code: string; name: string; role?: string }) {
+  return api<{ user_id: string; project_id: string; name: string; role: string | null }>(
+    "/projects/join",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function registerAgent(
+  projectId: string,
+  body: { name: string; provider?: string; model?: string; session_id?: string },
+) {
+  return api<MemberInfo & { is_new: boolean }>(`/projects/${projectId}/agents`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateMember(
+  projectId: string,
+  memberId: string,
+  body: { role?: string; kind?: "developer" | "agent"; requesting_user_id?: string | null },
+) {
+  return api<MemberInfo>(`/projects/${projectId}/members/${memberId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function removeMember(projectId: string, memberId: string, requestingUserId?: string | null) {
+  const qs = requestingUserId ? `?requesting_user_id=${encodeURIComponent(requestingUserId)}` : "";
+  return api<{ id: string; membership_status: string }>(
+    `/projects/${projectId}/members/${memberId}${qs}`,
+    { method: "DELETE" },
+  );
+}
+
+export function setProjectOwner(projectId: string, userId: string, requestingUserId?: string | null) {
+  return api<{ project_id: string; owner_user_id: string }>(`/projects/${projectId}/owner`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, requesting_user_id: requestingUserId ?? null }),
+  });
 }
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? "http://localhost:8000").replace(/\/$/, "");

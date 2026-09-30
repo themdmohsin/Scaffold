@@ -4,16 +4,20 @@ import {
   fetchContext,
   fetchContracts,
   fetchDecisions,
+  fetchMembers,
   fetchTasks,
   patchTask,
   reason,
   type ContextSummary,
   type Contract,
   type Decision,
+  type MemberInfo,
   type ReasonResponse,
   type Task,
 } from "./lib/api";
 import { subscribeToProject, type RealtimeHandle } from "./lib/realtime";
+// Phase 3 (team collaboration) — isolated panel, see components/Team.tsx.
+import Team from "./components/Team";
 
 type Phase =
   | { kind: "idle" }
@@ -26,6 +30,7 @@ interface ProjectData {
   tasks: Task[];
   decisions: Decision[];
   contracts: Contract[];
+  members: MemberInfo[];
 }
 
 const COLUMNS: { status: Task["status"]; label: string }[] = [
@@ -61,13 +66,16 @@ export default function App() {
   const pidRef = useRef<string>("");
 
   const load = useCallback(async (id: string) => {
-    const [context, tasks, decisions, contracts] = await Promise.all([
+    const [context, tasks, decisions, contracts, members] = await Promise.all([
       fetchContext(id),
       fetchTasks(id),
       fetchDecisions(id),
       fetchContracts(id),
+      // Older engines (pre-Phase-3) won't have this route yet — degrade to an
+      // empty roster instead of failing the whole project load.
+      fetchMembers(id).catch(() => [] as MemberInfo[]),
     ]);
-    return { context, tasks, decisions, contracts };
+    return { context, tasks, decisions, contracts, members };
   }, []);
 
   const join = useCallback(
@@ -157,6 +165,17 @@ export default function App() {
       setAskError(err instanceof Error ? err.message : String(err));
     } finally {
       setAsking(false);
+    }
+  }
+
+  async function refresh() {
+    const id = pidRef.current;
+    if (!id) return;
+    try {
+      const data = await load(id);
+      setPhase({ kind: "ok", data });
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -279,6 +298,13 @@ export default function App() {
               </div>
             )}
           </section>
+
+          <Team
+            projectId={pidRef.current}
+            members={phase.data.members}
+            ownerUserId={phase.data.context.project.owner_user_id ?? null}
+            onChanged={refresh}
+          />
 
           <section className="panel">
             <h3>Conflicts &amp; blockers</h3>

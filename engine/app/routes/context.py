@@ -20,7 +20,7 @@ from app.services import retrieval
 router = APIRouter(tags=["context"])
 
 CONTEXT_CONTRACT = {
-    "project": {"id": "...", "name": "...", "goal": None, "deadline": None},
+    "project": {"id": "...", "name": "...", "goal": None, "deadline": None, "owner_user_id": None},
     "tasks": {"todo": 0, "in_progress": 0, "done": 0},
     "active_tasks": [],
     "recent_decisions": [],
@@ -59,6 +59,9 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
             "goal": project.goal,
             "deadline": project.deadline.isoformat() if project.deadline else None,
             "created_at": project.created_at.isoformat(),
+            # Phase 3 (additive): who can perform owner-gated team actions —
+            # see routes/team.py. None until someone calls POST /owner.
+            "owner_user_id": str(project.owner_user_id) if project.owner_user_id else None,
         },
         "tasks": {
             "todo": counts.get("todo", 0),
