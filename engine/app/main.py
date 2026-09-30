@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.routing import Route
 
 from app import mcp_server
-from app.routes import context, contracts, decisions, github_webhook, invites, projects, reason, tasks, team, users
+from app.routes import context, contracts, coordination, decisions, github_webhook, invites, projects, reason, tasks, team, users
 
 
 class _McpPathFix:
@@ -58,6 +58,7 @@ app.include_router(reason.router)
 app.include_router(invites.router)  # Day 5: teammate invite/join (shareable link)
 app.include_router(users.router)  # Phase 2: read-only project roster for the dashboard
 app.include_router(team.router)  # Phase 3: members, agent identity, ownership
+app.include_router(coordination.router)  # Phase 4: ready tasks, recommendations, next actions
 # MCP: exact Route for POST/DELETE /mcp (avoids Starlette's /mcp -> /mcp/ 307),
 # plus the mount for sub-paths. Both go through the path-fixing wrapper.
 _mcp_wrapped = _McpPathFix(mcp_server.mcp_app)

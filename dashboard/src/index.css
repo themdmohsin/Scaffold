@@ -845,3 +845,147 @@ button:disabled {
   word-break: break-all;
   margin-bottom: 4px;
 }
+
+/* ---- Phase 4: Next Actions (intelligent coordination) panel ---- */
+
+.na-step {
+  border: 1px solid #30363d;
+  border-left: 3px solid #58a6ff;
+  border-radius: 8px;
+  background: #161b22;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.na-step.na-resolve_conflict {
+  border-left-color: #f85149;
+}
+
+.na-step.na-review_task {
+  border-left-color: #d29922;
+}
+
+.na-step.na-unblock_task {
+  border-left-color: #a371f7;
+}
+
+.na-step.na-all_clear {
+  border-left-color: #3fb950;
+}
+
+.na-step-head {
+  font-size: 12px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.na-step-title {
+  margin: 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.na-reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #8b949e;
+  font-size: 12px;
+}
+
+.na-reasons li {
+  margin-bottom: 2px;
+}
+
+.na-step-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.na-step-actions .na-secondary {
+  background: #21262d;
+}
+
+.na-acting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.na-acting select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.na-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.na-col h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.na-row {
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: #0d1117;
+}
+
+.na-row b {
+  display: block;
+  font-size: 13px;
+  color: #e6edf3;
+}
+
+.na-row small {
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.na-row.na-conflict {
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+.na-row.na-overlap {
+  border-color: rgba(210, 153, 34, 0.4);
+}
+
+.na-row.na-blocked {
+  border-color: rgba(163, 113, 247, 0.35);
+}
+
+.na-ok {
+  color: #3fb950;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.na-err {
+  color: #f85149;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.na-footer {
+  display: block;
+  margin-top: 10px;
+  color: #484f58;
+  font-size: 11px;
+}

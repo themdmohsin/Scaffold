@@ -36,6 +36,13 @@ GET   /projects/:id/contracts
 POST  /projects/:id/contracts
 POST  /projects/:id/github-webhook
 POST  /projects/:id/reason
+GET   /projects/:id/tasks/ready
+GET   /projects/:id/recommendations
+GET   /projects/:id/recommendations/next
+POST  /projects/:id/recommendations/next
+GET   /projects/:id/coordination
+POST  /projects/:id/tasks/:task_id/accept-recommendation
+POST  /projects/:id/tasks/:task_id/reject-recommendation
 ```
 
 **MCP tool names** (`engine/app/mcp_server.py`) — the OpenCode plugin calls these verbatim, do not rename:
@@ -46,6 +53,8 @@ get_active_tasks()
 get_recent_decisions()
 report_change(diff_summary: str, files_changed: list[str])
 create_task(title: str, owner_id: str | None, due_at: str | None)
+get_ready_tasks()
+get_recommended_task(user_id: str | None)
 ```
 
 **Env vars** — use exactly these names, add new ones to `.env.example` in the same commit if you introduce one:
@@ -105,6 +114,7 @@ bun run --cwd packages/opencode src/index.ts --version   # -> local
 # engine verification harnesses (require engine/.env with DATABASE_URL + schema applied)
 cd engine && python -m tests.test_day2   # diff parser, signed webhook, all 6 MCP tools
 cd engine && python -m tests.test_day3   # retrieval, /reason, context enrichment
+cd engine && python -m tests.test_phase4 # ready tasks, recommendations, next action, overrides
 
 # plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
 cd opencode-plugin && npm install && npm run typecheck

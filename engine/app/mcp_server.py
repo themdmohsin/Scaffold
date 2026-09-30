@@ -27,6 +27,8 @@ from app.config import settings
 from app.db.models import ApiContract, Decision, Event, Task, User
 from app.db.session import _init
 from app.routes.context import build_context
+from app.services import coordination as coord
+from app.services import coordination_data as cdata
 
 mcp = MCPServer("scaffold")
 
@@ -207,6 +209,92 @@ def create_task(
         )
         db.commit()
         return {"id": str(task.id), "title": task.title, "status": task.status}
+    finally:
+        db.close()
+
+
+# ---- Phase 4: coordination tools (deterministic; same pure service as the HTTP routes) ----
+
+
+@mcp.tool()
+def get_ready_tasks(project_id: str | None = None) -> dict:
+    """Tasks that are ready to start now: todo, not blocked, all dependencies done.
+    Explainable — every row carries reasons. Deterministic (no LLM)."""
+    db = _db()
+    try:
+        pid = _resolve_project_id(project_id)
+        snap = cdata.load_snapshot(db, pid)
+        incomplete = coord.incomplete_deps_per_task(snap["tasks"], snap["dep_edges"])
+        downstream = coord.downstream_open_counts(snap["tasks"], snap["dep_edges"])
+        ready = [
+            t | {"dependency_count": snap["dependency_counts"].get(t["id"], 0)}
+            for t in snap["tasks"]
+            if coord.is_ready(t, snap["open_blocker_task_ids"], incomplete.get(t["id"], set()))
+        ]
+        ranked = coord.rank_candidates(
+            ready, None, downstream, cdata.utcnow(), incomplete, snap["open_blocker_task_ids"]
+        )
+        users_by_id = {u["id"]: u for u in snap["users"]}
+        tasks_out = [
+            {
+                "id": t["id"],
+                "title": t["title"],
+                "priority": t.get("priority") or "medium",
+                "owner_id": t.get("owner_id"),
+                "owner_name": (users_by_id.get(t.get("owner_id") or "") or {}).get("name"),
+                "score": t["score"],
+                "reasons": t["reasons"],
+            }
+            for t in ranked[:10]
+        ]
+        return {"tasks": tasks_out, "count": len(tasks_out)}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def get_recommended_task(user_id: str | None = None, project_id: str | None = None) -> dict:
+    """"What should I work on?" — one explainable, deterministic recommendation
+    for a member or agent (pass user_id of a project member; omit user_id for the
+    project-level best next step). The LLM never picks this; rules over real
+    project state do."""
+    db = _db()
+    try:
+        pid = _resolve_project_id(project_id)
+
+        requester_id: str | None = None
+        if user_id:
+            uid = uuid.UUID(user_id)
+            user = db.get(User, uid)
+            if not user or user.project_id != pid:
+                raise ValueError("user_id is not a user on this project")
+            requester_id = str(uid)
+
+        snap = cdata.load_snapshot(db, pid)
+        rejected = coord.rejected_task_ids_from_events(snap["events"], requester_id or "", cdata.utcnow())
+
+        if requester_id:
+            rec = coord.recommend_for_user(
+                requester_id,
+                snap["tasks"],
+                snap["dep_edges"],
+                snap["open_blocker_task_ids"],
+                {u["id"]: u for u in snap["users"]},
+                rejected,
+                cdata.utcnow(),
+            )
+            top = rec.get("recommendation")
+            return {
+                "recommendation": top,
+                "alternates": rec.get("alternates", []),
+                "note": rec.get("note"),
+            }
+
+        action = coord.project_next_action(
+            snap["tasks"], snap["dep_edges"], snap["open_blocker_task_ids"],
+            snap["open_conflicts"], cdata.utcnow(),
+        )
+        return {"recommendation": action, "alternates": [], "note": None}
     finally:
         db.close()
 

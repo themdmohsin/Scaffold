@@ -239,3 +239,138 @@ export function removeDependency(projectId: string, taskId: string, dependsOnTas
 export function reason(projectId: string, prompt: string) {
   return api<ReasonResponse>(`/projects/${projectId}/reason`, { method: "POST", body: JSON.stringify({ prompt }) });
 }
+
+// --- Phase 4 (intelligent coordination) additive types + calls -------------
+// All decision logic is engine-side and deterministic; the dashboard only
+// renders it. No LLM is involved unless a user clicks "Explain".
+
+export type CoordinationState = "READY" | "BLOCKED" | "WAITING_ON_DEPENDENCY" | "IN_PROGRESS" | "REVIEW" | "DONE";
+
+export interface ReadyTask {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  owner_id: string | null;
+  owner_name?: string | null;
+  owner_kind?: string | null;
+  score: number;
+  score_factors: Record<string, number>;
+  reasons: string[];
+  downstream_open: number;
+  dependencies?: { id: string; title: string; status: TaskStatus }[];
+  dependency_count?: number;
+}
+
+export interface BlockedTaskRow {
+  id: string;
+  title: string;
+  state: "BLOCKED" | "WAITING_ON_DEPENDENCY";
+  priority: TaskPriority;
+  owner_id: string | null;
+  owner_name?: string | null;
+  waiting_on: { id: string; title: string; status: TaskStatus }[];
+  manual_blocker?: string | null;
+}
+
+export interface TaskOverlap {
+  task_a: { id: string; title: string; status: string; owner_id: string | null };
+  task_b: { id: string; title: string; status: string; owner_id: string | null };
+  shared_terms: string[];
+  similarity: number;
+}
+
+export interface ContractCollision {
+  route: string;
+  method: string;
+  tasks: { id: string; title: string; status: string; owner_id: string | null }[];
+}
+
+export interface CrossOwnerDependency {
+  waiting_task: { id: string; title: string; owner_id: string | null };
+  waiting_owner: string | null;
+  blocking_task: { id: string; title: string; owner_id: string | null };
+  blocking_owner: string | null;
+}
+
+export interface NextAction {
+  kind: "resolve_conflict" | "review_task" | "unblock_task" | "start_task" | "all_clear";
+  title: string;
+  task: { id: string; title: string; status: string; owner_id: string | null; priority: TaskPriority; state: CoordinationState; downstream_open: number } | null;
+  conflict?: { id: string; description: string | null; created_at: string } | null;
+  reasons: string[];
+}
+
+export interface CoordinationSummary {
+  project_id: string;
+  task_states: Record<CoordinationState, number>;
+  ready_to_start: ReadyTask[];
+  blocked: BlockedTaskRow[];
+  needs_review: { id: string; title: string; owner_id: string | null; owner_name?: string | null; created_at: string }[];
+  conflicts: {
+    open_contract_conflicts: { id: string; description: string | null; created_at: string }[];
+    task_overlaps: TaskOverlap[];
+    contract_collisions: ContractCollision[];
+    cross_owner_dependencies: CrossOwnerDependency[];
+  };
+  recommended_next_step: NextAction;
+  who_is_doing_what: { user_id: string; name: string | null; kind: "developer" | "agent"; open_tasks: { id: string; title: string; status: TaskStatus }[] }[];
+  generated_at: string;
+}
+
+export interface Recommendation {
+  task: { id: string; title: string; status: TaskStatus; priority: TaskPriority; owner_id: string | null; due_at: string | null } | null;
+  state: CoordinationState;
+  score: number;
+  score_factors: Record<string, number>;
+  reasons: string[];
+  downstream_open: number;
+  explanation?: string | null;
+}
+
+export interface RecommendationResponse {
+  project_id: string;
+  user: { id: string; name: string; kind: "developer" | "agent" } | null;
+  recommendation: Recommendation | null;
+  alternates: Recommendation[];
+  current_work: { id: string; title: string; status: TaskStatus; state: CoordinationState }[];
+  blocked_work: ({ id: string; title: string; status: TaskStatus; state: CoordinationState; waiting_on: string[] })[];
+  claimable_count: number;
+  note?: string;
+  conflict_awareness: {
+    cross_owner_dependencies: CrossOwnerDependency[];
+    contract_collisions: ContractCollision[];
+    open_conflicts: { id: string; description: string | null; created_at: string }[];
+  };
+  generated_at: string;
+}
+
+export const fetchCoordination = (projectId: string) =>
+  api<CoordinationSummary>(`/projects/${projectId}/coordination`);
+
+export const fetchRecommendation = (projectId: string, userId?: string | null) =>
+  api<RecommendationResponse>(
+    `/projects/${projectId}/recommendations${userId ? `?user_id=${encodeURIComponent(userId)}` : ""}`,
+  );
+
+export const fetchNextAction = (projectId: string, userId?: string | null) => {
+  const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
+  return api<{ project_id: string; action: NextAction; task_states: Record<CoordinationState, number> }>(
+    `/projects/${projectId}/recommendations/next${qs}`,
+  );
+};
+
+export function acceptRecommendation(projectId: string, taskId: string, userId: string) {
+  return api<{ accepted: boolean; task_id: string; idempotent: boolean }>(
+    `/projects/${projectId}/tasks/${taskId}/accept-recommendation`,
+    { method: "POST", body: JSON.stringify({ user_id: userId }) },
+  );
+}
+
+export function rejectRecommendation(projectId: string, taskId: string, userId: string, note?: string) {
+  return api<{ rejected: boolean; task_id: string }>(
+    `/projects/${projectId}/tasks/${taskId}/reject-recommendation`,
+    { method: "POST", body: JSON.stringify({ user_id: userId, note: note ?? null }) },
+  );
+}
+
