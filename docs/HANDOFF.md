@@ -1,5 +1,11 @@
 # HANDOFF
-## Current State — 2026-09-30 — Buffy (Phase 4 Intelligent Coordination COMPLETE on branch `feature/intelligent-coordination`)
+## Current State — 2026-09-30 — Buffy (Phase 4 Intelligent Coordination MERGED to `main` via PR #12)
+
+Phase 4 (intelligent coordination) landed on `main` via [PR #12](https://github.com/themdmohsin/Scaffold/pull/12)
+(branch `feature/intelligent-coordination`, commit df12cfa, merge 418e10a). Post-merge re-verification on
+`main`: `python -m tests.test_phase4` **125/125**, `cd dashboard && npm run build` clean. The detailed entry
+below (written pre-merge on the branch) describes exactly what is now on main — no follow-up merge work
+was needed: the branch was a single clean commit off 469d29b and applied without conflicts.
 
 The COORDINATE layer now answers "what should I work on?" and "what should happen next in this
 project?" — deterministic first, AI only to explain (fail-open; no LLM call unless `explain=true`).
