@@ -147,6 +147,47 @@ def summarize_diff(
     return line[:200] or None
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: recommendation explanations. The coordination service (pure, in
+# services/coordination.py) DECIDES what to recommend and why (repo rule #3);
+# the LLM here only phrases those database-grounded facts into one sentence.
+# It receives no other context and cannot invent project state.
+# ---------------------------------------------------------------------------
+
+_EXPLAIN_SYSTEM = (
+    "You are Scaffold, a coordination assistant. You are given a recommendation "
+    "that was ALREADY decided by deterministic rules over real project data, "
+    "plus the exact reasons for it. Restate it as ONE friendly sentence "
+    "(max 40 words) that names the task and weaves in the reasons. Plain text "
+    "only — no quotes, no markdown, no lists. Never mention any task, reason, "
+    "person, or fact that is not in the input — never invent project state."
+)
+
+
+def explain_recommendation(task_title: str, reasons: list[str]) -> str | None:
+    """One-sentence LLM phrasing of an already-made recommendation. Fail-open:
+    returns None on any provider trouble and callers fall back to the
+    deterministic reasons (the API works fully without an LLM)."""
+    clean = [r.strip() for r in reasons if r and r.strip()][:6]
+    user = f"RECOMMENDED TASK: {task_title}\nREASONS: " + "; ".join(clean)
+    try:
+        resp = _completion_with_retry(
+            model=chat_model(),
+            messages=[
+                {"role": "system", "content": _EXPLAIN_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            api_key=_key(),
+            max_tokens=80,
+            temperature=0.2,
+        )
+        text = (resp.choices[0].message.content or "").strip().strip('"')
+        line = text.splitlines()[0].strip() if text else ""
+        return line[:240] or None
+    except Exception:
+        return None
+
+
 _ANSWER_SYSTEM = """You are Scaffold, the shared-awareness assistant for a small software team.
 Answer the user's question using ONLY the project context provided. Be concise and concrete.
 If the question implies new work, suggest up to 3 tasks.

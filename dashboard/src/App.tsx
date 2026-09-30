@@ -5,6 +5,7 @@ import {
   removeDependency,
   fetchContext,
   fetchContracts,
+  fetchCoordination,
   fetchDecisions,
   fetchMembers,
   fetchTasks,
@@ -13,6 +14,7 @@ import {
   reason,
   type ContextSummary,
   type Contract,
+  type CoordinationSummary,
   type Decision,
   type MemberInfo,
   type ReasonResponse,
@@ -31,6 +33,8 @@ import BlockersPanel from "./components/BlockersPanel";
 import ActivityFeed from "./components/ActivityFeed";
 // Phase 3 (team collaboration) — isolated panel, see components/Team.tsx.
 import Team from "./components/Team";
+// Phase 4 (intelligent coordination) — deterministic next-actions panel.
+import NextActions from "./components/NextActions";
 
 type Phase =
   | { kind: "idle" }
@@ -45,6 +49,7 @@ interface ProjectData {
   decisions: Decision[];
   contracts: Contract[];
   members: MemberInfo[];
+  coordination: CoordinationSummary | null;
 }
 
 export default function App() {
@@ -62,7 +67,7 @@ export default function App() {
   const pidRef = useRef<string>("");
 
   const load = useCallback(async (id: string) => {
-    const [context, tasks, users, decisions, contracts, members] = await Promise.all([
+    const [context, tasks, users, decisions, contracts, members, coordination] = await Promise.all([
       fetchContext(id),
       fetchTasks(id),
       fetchUsers(id),
@@ -71,8 +76,11 @@ export default function App() {
       // Older engines (pre-Phase-3) won't have this route yet — degrade to an
       // empty roster instead of failing the whole project load.
       fetchMembers(id).catch(() => [] as MemberInfo[]),
+      // Phase 4 coordination summary — deterministic, no LLM; degrade to null
+      // against older engines so the panel silently hides.
+      fetchCoordination(id).catch(() => null),
     ]);
-    return { context, tasks, users, decisions, contracts, members };
+    return { context, tasks, users, decisions, contracts, members, coordination };
   }, []);
 
   const join = useCallback(
@@ -255,6 +263,15 @@ export default function App() {
           </header>
 
           <Overview context={phase.data.context} />
+
+          {phase.data.coordination && (
+            <NextActions
+              projectId={pidRef.current}
+              summary={phase.data.coordination}
+              members={phase.data.members}
+              onChanged={refresh}
+            />
+          )}
 
           <TaskBoard
             tasks={phase.data.tasks}

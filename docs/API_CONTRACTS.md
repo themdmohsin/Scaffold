@@ -186,6 +186,111 @@ Task assignment to a member or an agent reuses the existing, frozen `tasks.owner
 
 Authorization note: this repo has no authentication system. `requesting_user_id` is a placeholder authorization hook (compared server-side to `projects.owner_user_id`), not a verified identity — every other route in this API has the same trust model today. It becomes a real session identity once auth (e.g. Supabase Auth) is wired in.
 
+## Intelligent coordination routes (Phase 4 — additive)
+
+Every endpoint here is deterministic engine state (repo rule #3) — no LLM call happens unless `explain=true` is passed, and the LLM only phrases facts the deterministic layer already decided (fail-open: without a key the endpoints work unchanged, minus the one-line `explanation`).
+
+Task coordination states: `READY` (todo + not blocked + all dependencies done), `BLOCKED` (open blockers row / manual switch), `WAITING_ON_DEPENDENCY` (todo, an upstream is not done), `IN_PROGRESS`, `REVIEW`, `DONE`.
+
+### `GET /projects/:id/tasks/ready` *(Phase 4)*
+Query: `?user_id=<member uuid>` (optional — personalizes the ranking), `?explain=true` (optional LLM one-liner per row).
+```jsonc
+// response 200
+{
+  "ready_tasks": [ { "id", "title", "status", "priority", "owner_id", "owner_name", "owner_kind", "score", "score_factors": {"priority":40, "assignment":25, ...}, "reasons": ["status is todo", "no blocker is active", ...], "downstream_open": 2, "dependencies": [...], "ready": true } ],
+  "count": 3,
+  "ready_task_ids": ["..."],
+  "unassigned_ready_count": 1,
+  "project_task_states": { "READY": 2, "BLOCKED": 1, "WAITING_ON_DEPENDENCY": 1, "IN_PROGRESS": 1, "REVIEW": 0, "DONE": 2 },
+  "generated_at": "ISO-8601"
+}
+```
+Ordered by the explainable ranker (score desc, then oldest first, then id). `404` unknown project, `400` if `user_id` is not a member of THIS project.
+
+### `GET /projects/:id/recommendations?user_id=<member uuid>` *(Phase 4)*
+"What should I work on?" for one member (developer or agent — both are `users` rows; the agent's identity is its own roster entry, no provider hardcoded). Deterministic pipeline: drop done → drop this member's recently rejected → never recommend others' active work → own ready work → continue own in_progress → the ready dependency that unblocks own blocked work → claimable unassigned ready work → honest note.
+```jsonc
+// response 200
+{
+  "project_id": "...",
+  "user": { "id", "name", "kind" },
+  "recommendation": { "task": {"id","title","status","priority","owner_id","due_at"}, "state": "READY", "score": 95, "score_factors": {...}, "reasons": [...], "downstream_open": 0, "explanation": "LLM one-liner, only with explain=true" } | null,
+  "alternates": [ /* up to 3, same shape */ ],
+  "current_work": [...],   // this member's in_progress tasks with computed state
+  "blocked_work": [...],   // blocked/waiting tasks with waiting_on reasons
+  "claimable_count": 2,
+  "note": "honest no-work note, only when nothing is actionable",
+  "conflict_awareness": { "cross_owner_dependencies": [...], "contract_collisions": [...], "open_conflicts": [...] },
+  "generated_at": "ISO-8601"
+}
+```
+
+### `GET /projects/:id/recommendations/next` *(Phase 4)*
+Same engine as `/recommendations`, trimmed to `{project_id, user, recommendation, alternates, note, generated_at}` — the single best next move for the requester.
+
+### `POST /projects/:id/recommendations/next` *(Phase 4)*
+```jsonc
+// request  { "user_id": "optional member uuid" }
+// response 200
+{
+  "project_id": "...", "user": null,
+  "action": {
+    "kind": "resolve_conflict" | "review_task" | "unblock_task" | "start_task" | "all_clear",
+    "title": "Resolve the open contract conflict: ...",
+    "task": { ... } | null,
+    "conflict": { "id", "description", "created_at" } | null,
+    "reasons": ["...", "..."]
+  },
+  "task_states": { ... }, "open_conflicts": 1, "generated_at": "..."
+}
+```
+Project-level "what should happen next?" — deterministic precedence: resolve conflict > review > unblock (finish the dependency that unblocks waiting work) > start (top ready, unassigned preferred) > all clear. Every kind carries explicit `reasons`.
+
+### `GET /projects/:id/coordination` *(Phase 4)*
+One bounded payload for the dashboard's Next Actions panel (deterministic only — safe on every dashboard load):
+```jsonc
+{
+  "project_id": "...",
+  "task_states": { "READY": 0, "BLOCKED": 0, "WAITING_ON_DEPENDENCY": 0, "IN_PROGRESS": 0, "REVIEW": 0, "DONE": 0 },
+  "ready_to_start": [ /* ranked ready rows with reasons */ ],
+  "blocked": [ { "id", "title", "state", "priority", "owner_id", "owner_name", "waiting_on": [{"id","title","status"}], "manual_blocker" } ],
+  "needs_review": [ { "id", "title", "owner_id", "owner_name", "created_at" } ],
+  "conflicts": {
+    "open_contract_conflicts": [ /* unresolved blockers with task_id null (Day 4 detector) */ ],
+    "task_overlaps": [ { "task_a", "task_b", "shared_terms", "similarity" } ],  // conservative title+description token overlap — surfaces suspicion, mutates nothing
+    "contract_collisions": [ { "route", "method", "tasks": [...] } ],          // two OPEN tasks registered the SAME method+route (grounded in api_contracts.created_by_task_id)
+    "cross_owner_dependencies": [ { "waiting_task", "waiting_owner", "blocking_task", "blocking_owner" } ]
+  },
+  "recommended_next_step": { /* same shape as POST next.action */ },
+  "who_is_doing_what": [ { "user_id", "name", "kind", "open_tasks": [...] } ],
+  "generated_at": "..."
+}
+```
+
+### `POST /projects/:id/tasks/:task_id/accept-recommendation` *(Phase 4 — human override)*
+```jsonc
+// request  { "user_id": "required member uuid", "note": "optional" }
+// response 201 (assigned) / 200 (idempotent re-accept)
+{ "accepted": true, "task_id": "...", "task": { ...full TaskOut... }, "owner_id": "...", "idempotent": false }
+```
+Human override — ACCEPT. Claims the task for the deciding member by assigning the existing frozen `tasks.owner_id` (no second assignment system) and writes `recommendation_accepted` (+ `task_assigned` when ownership changed). Scaffold NEVER takes ownership of a task on its own — only an explicit POST does. `400` if the task is done; `404` unknown project/task; `400` if `user_id` is not a member.
+
+### `POST /projects/:id/tasks/:task_id/reject-recommendation` *(Phase 4 — human override)*
+```jsonc
+// request  { "user_id": "required member uuid", "note": "optional" }
+// response 200 { "rejected": true, "task_id": "...", "user_id": "..." }
+```
+Human override — REJECT. Writes a `recommendation_rejected` event; the deterministic recommender excludes this task for this member for 7 days (`services/coordination.py`), then it becomes eligible again. Nothing else changes — no status flip, no assignment; fully reversible by accepting.
+
+### New Phase 4 MCP tools (additive — the six frozen tools are untouched)
+```
+get_ready_tasks(project_id?)                          → { tasks: [ ranked ready rows with reasons ], count }
+get_recommended_task(user_id? = null, project_id?)    → { recommendation, alternates, note } — per-member
+                                                        "what should I work on?", or the project-level
+                                                        next action when user_id is omitted
+```
+Both are deterministic (no LLM) and reuse the same pure service as the HTTP routes.
+
 ## MCP server (Day 2 — LIVE at `/mcp`, streamable HTTP)
 The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention.
 ```
@@ -239,6 +344,7 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 
 ## Changelog (append-only after Day 1)
 
+- 2026-09-30 — Phase 4 (intelligent coordination, `feature/intelligent-coordination`): the COORDINATE layer learns to answer "what should I work on?" and "what should happen next?" — deterministically first, AI only to explain. NO schema changes (pure computation over the existing tables; no migration file, nothing new stored — recommendation decisions are recorded as events only). New routes (all additive, see the "Intelligent coordination routes" section): `GET /projects/:id/tasks/ready`, `GET /projects/:id/recommendations`, `GET /projects/:id/recommendations/next`, `POST /projects/:id/recommendations/next` (project-level next action), `GET /projects/:id/coordination` (dashboard panel payload), and the human-override pair `POST /projects/:id/tasks/:task_id/accept-recommendation` / `POST .../reject-recommendation`. New `engine/app/services/coordination.py` (pure deterministic state classification READY/BLOCKED/WAITING_ON_DEPENDENCY/IN_PROGRESS/REVIEW/DONE, explainable scoring — priority/assignment/downstream-impact/deadline/age, every factor echoed as reasons — recommendation pipeline, project next action, overlap detection, cross-owner dependency awareness) + `coordination_data.py` (bounded plain-row loaders). Task states of record remain the existing `tasks.status`/`blocked`/`task_dependencies`/`blockers` columns; nothing is duplicated. Two additive MCP tools: `get_ready_tasks`, `get_recommended_task` (frozen six untouched). Two new event types: `recommendation_accepted`, `recommendation_rejected` (the only persistence — the human decision trail). LLM usage: one new fail-open helper `reasoning.explain_recommendation` (phrases already-decided facts into one sentence; only called with `explain=true`; reasoning.py remains the only LLM file). Human override: accept claims the task via the frozen `tasks.owner_id` assignment path (never automatic); reject suppresses the task for that member for 7 days (window constant in coordination.py). No new env vars. Verified: `python -m tests.test_phase4` 125/125 (pure units + DB-backed route legs incl. MCP over the wire); full regression re-run green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40 (248 passed, 0 failed); `dashboard && npm run build` clean. Dashboard: new Next Actions panel (`components/NextActions.tsx`) — recommended next step with Accept/Not-now override, READY TO START / BLOCKED / NEEDS REVIEW / CONFLICTS columns (incl. "Potential overlap detected" rows), who-is-doing-what footer; loads via one deterministic GET (no LLM on dashboard load), degrades silently against older engines.
 - 2026-09-30 — Phase 3 (team collaboration, `feature/team-collaboration`): new additive routes `GET /projects/:id/members`, `PATCH /projects/:id/members/:member_id`, `DELETE /projects/:id/members/:member_id`, `POST /projects/:id/agents`, `POST /projects/:id/owner` — full shapes in the new "Team collaboration routes" section above. AI agents are first-class `users` rows (`kind='agent'`, free-text `agent_provider`/`agent_model` — no vendor hardcoded). Task assignment reuses the existing frozen `tasks.owner_id` + `PATCH /projects/:id/tasks/:task_id` — no second task/assignment system. Activity status (`ACTIVE`/`IDLE`/`BLOCKED`/`OFFLINE`) is computed deterministically in `engine/app/services/team.py` from existing tasks/decisions/events — never an LLM call, never faked live presence. `GET /projects/:id/context` gains one ADDITIVE key on `project`: `owner_user_id` (null until `POST /owner` is called). Owner-gated mutations use a placeholder `requesting_user_id` field compared to `projects.owner_user_id` — not real auth (none exists yet anywhere in this API); becomes a real session identity once auth is wired in. No changes to Day 5 invite/join (still stateless HMAC codes, no invites table). New indexes + `users` columns (`kind`, `agent_provider`, `agent_model`, `agent_session_id`, `membership_status`, `joined_at`) and `projects.owner_user_id` — see `docs/SCHEMA.md`. No new env vars. Verified: `python -m tests.test_phase3` 40/40 (offline pure units + DB-backed route legs); full regression re-run clean — `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74 (205 total, 0 failed); `dashboard && npm run build` clean (tsc + vite). New dashboard Team panel (`components/Team.tsx`) is additive/isolated — roster table, invite/join/agent-registration mini-forms, owner/role/remove actions; `App.tsx` gained one new fetch (`fetchMembers`, degrades to an empty roster against older engines) and one new panel mount.
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A, branch `feature/project-control-center`): the task board + coordination layer. `GET/POST /projects/:id/tasks` and `PATCH /projects/:id/tasks/:task_id` gain ADDITIVE fields only (`description`, `priority`, `blocked`, `created_by`, `completed_at`, `dependencies`, `blocked_by_dependencies`, `is_blocked`); every Day 1 field on those routes is byte-identical, and `task_created`/`task_updated` events keep their frozen payload shape. `status` CHECK widened to add `'review'` (`todo|in_progress|review|done`). New routes: `POST`/`DELETE /projects/:id/tasks/:task_id/dependencies[/:depends_on_task_id]` (task_dependencies CRUD, idempotent) and `GET /projects/:id/users` (read-only roster for the assignee picker). `GET /projects/:id/context` gains two ADDITIVE keys: `task_counts` (todo/in_progress/review/done/blocked) and `open_conflicts` (unresolved blockers with no `task_id` — i.e. contract-shape conflicts, distinct from task-level blockers). New event types for the activity feed (all additional to, never replacing, the frozen `task_created`/`task_updated`): `task_status_changed`, `task_completed`, `task_assigned`, `task_priority_changed`, `task_blocked`, `task_unblocked`, `task_dependency_added`, `task_dependency_removed`. No env var changes. No existing route, MCP tool, or event type removed or renamed.
 - 2026-09-26 — Day 5 round 6 (full-repo audit): `POST /projects/:id/github-webhook` now ingests ONLY pushes to the default branch (`refs/heads/main`/`master`); feature-branch pushes are acknowledged with `{ok, processed: [], skipped: {branch, reason}}` so WIP routes never become contracts or fire false conflicts (payloads without `ref` — older fixtures — are treated as main, backwards compatible). Removed the stray undeclared `GET /api/test/scaffold-v2` route (was never in the frozen contract list). No other route/shape changes.

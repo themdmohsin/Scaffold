@@ -1,4 +1,66 @@
 # HANDOFF
+## Current State — 2026-09-30 — Buffy (Phase 4 Intelligent Coordination COMPLETE on branch `feature/intelligent-coordination`)
+
+The COORDINATE layer now answers "what should I work on?" and "what should happen next in this
+project?" — deterministic first, AI only to explain (fail-open; no LLM call unless `explain=true`).
+All additive on top of Phases 1-3; every frozen route/MCP tool/event untouched.
+**Verified on hardware this session**: `python -m tests.test_phase4` **125/125** (pure units + DB-backed
+route legs over the live Supabase DB, incl. both new MCP tools over the real wire), full regression
+green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40 —
+**373 passed, 0 failed** across all seven suites; `cd dashboard && npm run build` clean (tsc + vite).
+
+What's new (NO schema changes — pure computation over existing tables; nothing new stored except
+two event types):
+- `engine/app/services/coordination.py` — pure deterministic intelligence (repo rule #3): state
+  classification READY / BLOCKED / WAITING_ON_DEPENDENCY / IN_PROGRESS / REVIEW / DONE over the
+  existing `tasks`+`task_dependencies`+`blockers` graph; explainable scoring (priority 40/30/20/10,
+  assignment +25, downstream +4/cap 20, deadline +10/+5, age +2 — every factor echoed as reasons);
+  "what should I work on?" pipeline (own ready → continue in_progress → the dependency that
+  unblocks own blocked work → claimable unassigned → honest note); project next action
+  (resolve_conflict > review_task > unblock_task > start_task > all_clear); duplicate/overlap
+  detection (conservative token-Jaccard over open tasks, surfaces "potential overlap", mutates
+  nothing); contract collisions (two open tasks registered the same method+route via
+  `api_contracts.created_by_task_id` — grounded, never filename-guessed); cross-owner dependency
+  awareness ("Alice is waiting on Bob"); rejection memory honored from events (7-day window).
+  `coordination_data.py` = bounded plain-row loaders (routes/team.py pattern).
+- Routes (`app/routes/coordination.py`, all additive): `GET /projects/:id/tasks/ready`,
+  `GET /projects/:id/recommendations?user_id=`, `GET|POST /projects/:id/recommendations/next`,
+  `GET /projects/:id/coordination`, and the human-override pair
+  `POST /projects/:id/tasks/:task_id/accept-recommendation` (201 assigns via the frozen
+  `tasks.owner_id` path + `recommendation_accepted`/`task_assigned` events; idempotent re-accept
+  200) / `.../reject-recommendation` (200, `recommendation_rejected` event → hidden from that
+  member's suggestions for 7 days; no other mutation). Membership is validated against the
+  project roster (`user_id` of another project → 400) under the repo's existing no-auth trust model.
+- MCP (additive; frozen six untouched): `get_ready_tasks()`, `get_recommended_task(user_id?, project_id?)`
+  — both deterministic, same pure service as the HTTP routes.
+- AI usage: one new helper `reasoning.explain_recommendation(title, reasons)` — the LLM only
+  phrases already-decided facts into one sentence, receives nothing else, returns None on any
+  trouble (reasoning.py stays the only LLM file). Dashboard loads never call it.
+- Dashboard: new `components/NextActions.tsx` — recommended next step (color-coded by kind) with
+  **Accept & claim / Not now** override buttons + "acting as" member picker, READY TO START /
+  BLOCKED / NEEDS REVIEW / CONFLICTS columns ("Potential overlap detected" rows included),
+  who-is-doing-what footer; one deterministic GET per load (`fetchCoordination`, degrades to a
+  hidden panel against older engines); CSS appended to `index.css`; `lib/api.ts` gained additive
+  types + calls only.
+- No new env vars; no secrets touched.
+
+Demo recipe: project with 2 members + 1 agent → tasks in every state (done / in_progress / review /
+blocked / waiting-on-dep / ready) → `GET /tasks/ready` shows only the ready one with reasons →
+`GET /recommendations?user_id=<agent>` gives the agent its own recommendation → complete the
+blocking dependency → the waiting task flips to READY (dependency-aware) → accept → task assigned
+to the acceptor; reject → gone from their suggestions → register two contracts with the same
+route from two different tasks → project next action becomes `resolve_conflict` with reasons.
+
+Known limitations: ready/recommendation reads are per-request computed (no cache — fine at demo
+scale; add a short TTL cache if boards grow); overlap detection is lexical only (embeddings-based
+similarity would need an `embedding` column on tasks — deliberately not added to keep Phase 4
+schema-free); `explain=true` is the only LLM touchpoint and fails open; no real auth anywhere
+(same trust model as every other route — `user_id` is roster-validated, not session-verified).
+
+Next person should: run the seven suites once on their machine, then drive the demo recipe against
+two browser tabs (acting-as Alice vs the agent) — the coordination panel updates on refetch.
+
+---
 ## Current State — 2026-09-30 — Merge (Phase 2 + Phase 3 reconciled onto `main`)
 
 Phase 3 (team collaboration) merged to `main` first via PR #9. Phase 2 (Project Control Center) was then committed on `feature/project-control-center` and merged into it locally to reconcile against the new `main`. Six conflicts, all in shared files the two phases both touched (`App.tsx`, `docs/API_CONTRACTS.md`, `docs/HANDOFF.md`, `docs/SCHEMA.md`, `engine/app/db/session.py`, `engine/app/main.py`) — every one was additive-vs-additive (new import next to new import, new router next to new router, new changelog line next to new changelog line), no logic overwritten on either side. `App.tsx` had one extra wrinkle: both phases had independently extracted the same inline refresh logic into an identical `refresh()` helper — the duplicate was removed, one kept. `session.py`: adopted Phase 2's cleaner shared `_apply_sql_migration(engine, filename, label)` helper for all three migrations (day3/phase2/phase3), dropping Phase 3's now-redundant `_phase3_migration_applied` guard (the outer `_init()` memoization already prevents re-runs). `main.py`: both new routers (`users` from Phase 2, `team` from Phase 3) are complementary, not overlapping — kept both. Re-verified after resolution: `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74, `test_phase2` 43/43, `test_phase3` 40/40 — **248/248 passed**; `npm run build` clean.
