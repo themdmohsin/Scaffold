@@ -13,7 +13,9 @@ export interface RealtimeHandle {
   unsubscribe: () => void;
 }
 
-const TABLES = ["tasks", "decisions", "events"] as const;
+// Phase 2: blockers/task_dependencies joined the supabase_realtime publication
+// (migrate_phase2.sql) so the Blockers panel and dependency chips update live too.
+const TABLES = ["tasks", "decisions", "events", "blockers", "task_dependencies"] as const;
 
 export function subscribeToProject(
   projectId: string,

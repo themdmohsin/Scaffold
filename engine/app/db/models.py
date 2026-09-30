@@ -66,6 +66,8 @@ class Task(Base):
         UUID(as_uuid=True), ForeignKey("projects.id")
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    # 'todo' | 'in_progress' | 'review' | 'done' — 'review' added Phase 2
+    # (migrate_phase2.sql widens the CHECK; old values untouched).
     status: Mapped[str] = mapped_column(String, default="todo")
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id")
@@ -74,6 +76,15 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Phase 2 (Project Control Center) additions — all nullable/defaulted,
+    # additive per docs/SCHEMA.md freeze rule. See migrate_phase2.sql.
+    description: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String, default="medium")
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskDependency(Base):

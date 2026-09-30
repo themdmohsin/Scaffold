@@ -1,4 +1,45 @@
 # HANDOFF
+## Current State — 2026-09-30 — Merge (Phase 2 + Phase 3 reconciled onto `main`)
+
+Phase 3 (team collaboration) merged to `main` first via PR #9. Phase 2 (Project Control Center) was then committed on `feature/project-control-center` and merged into it locally to reconcile against the new `main`. Six conflicts, all in shared files the two phases both touched (`App.tsx`, `docs/API_CONTRACTS.md`, `docs/HANDOFF.md`, `docs/SCHEMA.md`, `engine/app/db/session.py`, `engine/app/main.py`) — every one was additive-vs-additive (new import next to new import, new router next to new router, new changelog line next to new changelog line), no logic overwritten on either side. `App.tsx` had one extra wrinkle: both phases had independently extracted the same inline refresh logic into an identical `refresh()` helper — the duplicate was removed, one kept. `session.py`: adopted Phase 2's cleaner shared `_apply_sql_migration(engine, filename, label)` helper for all three migrations (day3/phase2/phase3), dropping Phase 3's now-redundant `_phase3_migration_applied` guard (the outer `_init()` memoization already prevents re-runs). `main.py`: both new routers (`users` from Phase 2, `team` from Phase 3) are complementary, not overlapping — kept both. Re-verified after resolution: `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74, `test_phase2` 43/43, `test_phase3` 40/40 — **248/248 passed**; `npm run build` clean.
+
+---
+## Current State — 2026-09-30 — Buffy (Developer A, Phase 2 Project Control Center COMPLETE on branch `feature/project-control-center`, uncommitted)
+
+The COORDINATE layer's task board is built end-to-end on this branch (DB → API → UI → tests), docs
+changelog entries included. **Verified on hardware this session**: `python -m tests.test_phase2`
+43/43 (incl. migration idempotency + teardown), regressions green — test_day2 31, test_day3 35,
+test_day4b 25, test_day5 74 — and `cd dashboard && npm run build` clean (tsc + vite).
+
+What's new (all ADDITIVE; frozen routes/shapes byte-identical, pinned by test_phase2):
+- DB (`engine/app/db/migrate_phase2.sql`, auto-applied at startup after migrate_day3.sql): tasks gains
+  `description/priority/blocked/created_by/completed_at` + status CHECK widened with `'review'`;
+  blockers + task_dependencies join the supabase_realtime publication.
+- API: tasks GET/POST/PATCH gain additive fields (`dependencies`, `blocked_by_dependencies`,
+  `is_blocked`, priority, blocked, …); new `POST/DELETE /projects/:id/tasks/:task_id/dependencies`,
+  `GET /projects/:id/users` (read-only roster); `GET /context` gains `task_counts` (incl. review/blocked)
+  and `open_conflicts` (blockers with task_id NULL). Manual blocked ⇄ blockers row is upsert/resolve
+  with dedupe. New events: task_status_changed/completed/assigned/priority_changed/blocked/unblocked/
+  dependency_added/dependency_removed (next to the frozen task_created/task_updated).
+- Dashboard: Overview strip (health + counts + progress), 4-column TaskBoard (TODO/IN PROGRESS/REVIEW/
+  DONE) with create + advance, TaskDetail drawer (edit/assign/priority/block+reason/dependencies),
+  ActiveWork, BlockersPanel (task blockers vs contract conflicts), ActivityFeed, realtime now covers
+  blockers + task_dependencies. New files: components/{Overview,TaskBoard,TaskDetail,ActiveWork,
+  BlockersPanel,ActivityFeed}.tsx, lib/format.ts; modified: App.tsx, lib/api.ts, lib/realtime.ts, index.css.
+- No new env vars; no secrets touched.
+
+Known limitations: no cross-project task scoping UI beyond URL project_id (API enforces scoping);
+dependency cycles are not rejected server-side (display-only impact, is_blocked computed per edge);
+ActiveWork derives "who's working" from tasks+events (agent-session identity is Phase 3). Uncommitted —
+suggest commit message: `feat: phase 2 project control center — task board, dependencies, blockers,
+activity, users roster, realtime + tests`.
+
+Next person should start with: `git status` on this branch (13 modified + 8 new files awaiting commit),
+run the suites above once on their machine, then pick up Phase 3 (identity/agent sessions) — ActiveWork
+was shaped to extend without rewriting.
+
+---
+
 ## Current State — 2026-09-30 — Developer B (Phase 3 team collaboration COMPLETE on branch `feature/team-collaboration`, built from `main` @ 9511e5e, uncommitted-at-write-time)
 
 Built independently from `main` (NOT from the uncommitted Phase 2 `feature/project-control-center` branch — Phase 2 hadn't merged, per the Phase 3 brief's "build against stable pre-Phase-2 architecture" instruction) in a separate git worktree (`../Scaffold-team-collab`) so Developer A's uncommitted work was never touched.
@@ -14,6 +55,8 @@ What's new (all ADDITIVE; every existing route/shape byte-identical, pinned by t
 Known limitations / next steps: `requesting_user_id` is not verified (see auth model above) — the first thing a real auth integration should do is make the engine derive it from a session instead of trusting the request body. `activity_status` is activity-derived, not live presence (no heartbeat/websocket exists) — thresholds (15min=ACTIVE, 24h=IDLE cutoff) are in `services/team.py`, easy to retune. The Team panel's "acting as" selector is a demo affordance, not a login. This branch was built from `main` (9511e5e), not from Developer A's uncommitted Phase 2 work on `feature/project-control-center` — when Phase 2 merges, `App.tsx`/`lib/api.ts`/`index.css` will need a manual integration pass (both branches touch these three files; Team's additions are isolated blocks that should merge cleanly, but expect conflict markers, not silent data loss).
 
 Next person should: merge Phase 2 first (it's further along / already reviewed per its own HANDOFF entry), then rebase/reapply this Phase 3 diff on top and resolve the three shared-file conflicts (`App.tsx`, `lib/api.ts`, `index.css`) — everything else in this diff (new files: `migrate_phase3.sql`, `services/team.py`, `routes/team.py`, `components/Team.tsx`, `tests/test_phase3.py`) applies with zero conflict risk. Suggested commit message below.
+
+*(Reconciled 2026-09-30 — see the merge entry at the top of this file: Phase 3 landed on `main` first via PR #9, Phase 2 was merged into it afterward, six shared-file conflicts resolved, 213/213 re-verified.)*
 
 ---
 
