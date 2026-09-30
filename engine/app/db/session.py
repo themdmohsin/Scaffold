@@ -45,6 +45,12 @@ def _apply_phase2_migration(engine: Engine) -> None:
     _apply_sql_migration(engine, "migrate_phase2.sql", "phase2 (task board)")
 
 
+def _apply_phase3_migration(engine: Engine) -> None:
+    """Idempotent Phase 3 DDL (migrate_phase3.sql): agent identity columns on
+    `users`, `projects.owner_user_id`, membership status."""
+    _apply_sql_migration(engine, "migrate_phase3.sql", "phase3 (team collaboration)")
+
+
 def _init() -> sessionmaker:
     global _engine, _SessionLocal
     if _SessionLocal is not None:
@@ -72,6 +78,7 @@ def _init() -> sessionmaker:
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     _apply_day3_migration(_engine)
     _apply_phase2_migration(_engine)
+    _apply_phase3_migration(_engine)
     return _SessionLocal
 
 

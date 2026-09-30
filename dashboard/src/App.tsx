@@ -6,6 +6,7 @@ import {
   fetchContext,
   fetchContracts,
   fetchDecisions,
+  fetchMembers,
   fetchTasks,
   fetchUsers,
   patchTask,
@@ -13,6 +14,7 @@ import {
   type ContextSummary,
   type Contract,
   type Decision,
+  type MemberInfo,
   type ReasonResponse,
   type Task,
   type TaskStatus,
@@ -27,6 +29,8 @@ import TaskDetail from "./components/TaskDetail";
 import ActiveWork from "./components/ActiveWork";
 import BlockersPanel from "./components/BlockersPanel";
 import ActivityFeed from "./components/ActivityFeed";
+// Phase 3 (team collaboration) — isolated panel, see components/Team.tsx.
+import Team from "./components/Team";
 
 type Phase =
   | { kind: "idle" }
@@ -40,6 +44,7 @@ interface ProjectData {
   users: UserInfo[];
   decisions: Decision[];
   contracts: Contract[];
+  members: MemberInfo[];
 }
 
 export default function App() {
@@ -57,14 +62,17 @@ export default function App() {
   const pidRef = useRef<string>("");
 
   const load = useCallback(async (id: string) => {
-    const [context, tasks, users, decisions, contracts] = await Promise.all([
+    const [context, tasks, users, decisions, contracts, members] = await Promise.all([
       fetchContext(id),
       fetchTasks(id),
       fetchUsers(id),
       fetchDecisions(id),
       fetchContracts(id),
+      // Older engines (pre-Phase-3) won't have this route yet — degrade to an
+      // empty roster instead of failing the whole project load.
+      fetchMembers(id).catch(() => [] as MemberInfo[]),
     ]);
-    return { context, tasks, users, decisions, contracts };
+    return { context, tasks, users, decisions, contracts, members };
   }, []);
 
   const join = useCallback(
@@ -292,6 +300,13 @@ export default function App() {
               </div>
             )}
           </section>
+
+          <Team
+            projectId={pidRef.current}
+            members={phase.data.members}
+            ownerUserId={phase.data.context.project.owner_user_id ?? null}
+            onChanged={refresh}
+          />
 
           <section className="panel">
             <h3>Decision log</h3>

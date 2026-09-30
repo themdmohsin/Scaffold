@@ -22,6 +22,7 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | goal | TEXT | |
 | deadline | TIMESTAMPTZ | |
 | created_at | TIMESTAMPTZ | default `now()` |
+| owner_user_id | UUID → users(id), ON DELETE SET NULL | Phase 3 addition — nullable; set via `POST /projects/:id/owner` |
 
 ### users
 | column | type | notes |
@@ -29,7 +30,13 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | id | UUID PK | default `gen_random_uuid()` |
 | project_id | UUID → projects(id) | |
 | name | TEXT NOT NULL | |
-| role | TEXT | |
+| role | TEXT | free text (e.g. `"backend"`, `"owner"`, `"member"`, `"agent"`) — never CHECK-constrained, existing Day 5 values must keep working |
+| kind | TEXT | Phase 3 addition — default `'developer'`, CHECK in (`'developer'`,`'agent'`); distinguishes a human teammate from an AI agent participant |
+| agent_provider | TEXT | Phase 3 addition — nullable, free text (e.g. `"anthropic"`); never hardcode a vendor list |
+| agent_model | TEXT | Phase 3 addition — nullable, free text (e.g. `"claude-sonnet-5"`) |
+| agent_session_id | TEXT | Phase 3 addition — nullable; workspace/session identifier if the caller has one |
+| membership_status | TEXT | Phase 3 addition — default `'active'`, CHECK in (`'active'`,`'removed'`); soft-delete for `DELETE /projects/:id/members/:member_id` |
+| joined_at | TIMESTAMPTZ | Phase 3 addition — default `now()` |
 
 ### tasks
 | column | type | notes |
@@ -137,6 +144,11 @@ CREATE INDEX idx_tasks_project_blocked ON tasks(project_id) WHERE blocked = true
 CREATE INDEX idx_task_dependencies_depends_on ON task_dependencies(depends_on_task_id);
 CREATE INDEX idx_blockers_project_task ON blockers(project_id, task_id);
 -- blockers, task_dependencies added to the supabase_realtime publication (migrate_phase2.sql)
+
+-- Phase 3 additions (team collaboration)
+CREATE INDEX idx_users_project_kind   ON users(project_id, kind);
+CREATE INDEX idx_users_project_status ON users(project_id, membership_status);
+-- users added to the supabase_realtime publication (migrate_phase3.sql)
 ```
 
 ## Changelog (append-only after Day 1)
@@ -144,3 +156,4 @@ CREATE INDEX idx_blockers_project_task ON blockers(project_id, task_id);
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
 - 2026-09-24 — Day 3: additive only — nullable `embedding VECTOR(1536)` on `decisions` + `api_contracts`, two HNSW cosine indexes, `tasks`/`decisions`/`events` added to the `supabase_realtime` publication. Applied by `engine/app/db/migrate_day3.sql` (auto at engine startup, idempotent).
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A): `tasks.status` CHECK widened to add `'review'` (`'todo'|'in_progress'|'review'|'done'`) — existing values untouched, this is a widening, not a rename. Additive nullable/defaulted columns on `tasks`: `description TEXT`, `priority TEXT DEFAULT 'medium'` (CHECK `'low'|'medium'|'high'|'urgent'`), `blocked BOOLEAN DEFAULT false`, `created_by UUID → users(id)`, `completed_at TIMESTAMPTZ`. Four new supporting indexes (above). `blockers` and `task_dependencies` added to the `supabase_realtime` publication (dashboard live updates for the Blockers panel and dependency chips). Applied by `engine/app/db/migrate_phase2.sql` (auto at engine startup, idempotent, chained after `migrate_day3.sql`). No tables renamed or dropped; `task_dependencies` (already frozen Day 1, previously unused by any route) is now read/written by the task routes.
+- 2026-09-30 — Phase 3 (team collaboration): additive only — `users` gains `kind` ('developer'|'agent'), `agent_provider`, `agent_model`, `agent_session_id`, `membership_status` ('active'|'removed'), `joined_at`; `projects` gains `owner_user_id` (FK → users, ON DELETE SET NULL). Two new indexes; `users` added to the `supabase_realtime` publication. No renames, no new tables — agents and developers share the existing `users` roster, and invitations still use the Day 5 stateless HMAC code (no invites table). Applied by `engine/app/db/migrate_phase3.sql` (auto at engine startup, idempotent).

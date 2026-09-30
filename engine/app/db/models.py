@@ -30,6 +30,11 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Phase 3 (team collaboration) addition — nullable, additive per the
+    # docs/SCHEMA.md freeze rule. See migrate_phase3.sql.
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id")
+    )
 
 
 class User(Base):
@@ -41,6 +46,16 @@ class User(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str | None] = mapped_column(Text)
+    # Phase 3 (team collaboration) additions — all nullable/defaulted, additive
+    # per docs/SCHEMA.md freeze rule. See migrate_phase3.sql.
+    kind: Mapped[str] = mapped_column(String, default="developer")  # 'developer' | 'agent'
+    agent_provider: Mapped[str | None] = mapped_column(Text)
+    agent_model: Mapped[str | None] = mapped_column(Text)
+    agent_session_id: Mapped[str | None] = mapped_column(Text)
+    membership_status: Mapped[str] = mapped_column(String, default="active")  # 'active' | 'removed'
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class Task(Base):

@@ -721,3 +721,127 @@ button:disabled {
     gap: 14px;
   }
 }
+
+/* --- Phase 3: team collaboration panel (components/Team.tsx) --- */
+.team-panel {
+  border-top: 1px solid #30363d;
+  padding-top: 20px;
+}
+
+.team-acting-as {
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.team-acting-as select {
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.team-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+
+.team-table th {
+  text-align: left;
+  color: #8b949e;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-bottom: 1px solid #30363d;
+}
+
+.team-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #21262d;
+  vertical-align: middle;
+}
+
+.team-row-agent {
+  background: #10151c;
+}
+
+.team-agent-meta {
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.badge-owner {
+  color: #d29922;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.team-status-active {
+  color: #3fb950;
+}
+
+.team-status-idle {
+  color: #d29922;
+}
+
+.team-status-blocked {
+  color: #f85149;
+}
+
+.team-status-offline {
+  color: #8b949e;
+}
+
+.team-row-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+  margin-right: 6px;
+}
+
+.team-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.team-form {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.team-form h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.team-form input {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.invite-result {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.invite-result code {
+  display: block;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 8px;
+  word-break: break-all;
+  margin-bottom: 4px;
+}
