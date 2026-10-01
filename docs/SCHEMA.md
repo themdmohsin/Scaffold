@@ -149,7 +149,94 @@ CREATE INDEX idx_blockers_project_task ON blockers(project_id, task_id);
 CREATE INDEX idx_users_project_kind   ON users(project_id, kind);
 CREATE INDEX idx_users_project_status ON users(project_id, membership_status);
 -- users added to the supabase_realtime publication (migrate_phase3.sql)
+
+-- Phase 5 additions (secure environment — migrate_phase5.sql)
+CREATE INDEX idx_env_vars_project     ON environment_variables(project_id);
+CREATE INDEX idx_env_vars_project_key ON environment_variables(project_id, key);
+CREATE INDEX idx_env_access_var       ON environment_access(environment_variable_id);
+CREATE INDEX idx_env_access_user      ON environment_access(user_id);
+-- environment_variables + environment_access added to the supabase_realtime publication
+-- (live dashboard status). The VALUE layer (scaffold_secrets.*) is deliberately NOT
+-- in any publication and NOT in `public` — see the Phase 5 section below.
 ```
+
+## Phase 5 additions (secure environment & context — migrate_phase5.sql)
+
+Environment configuration is THREE strictly separated layers:
+
+1. **Metadata** — `public.environment_variables`: what variables exist.
+2. **Permissions** — `public.environment_access`: who may retrieve what.
+3. **Values** — `scaffold_secrets.*` (NON-public schema): ciphertext + keyring.
+
+No plaintext secret value is ever stored in any column here, in `events.payload`,
+in logs, or returned by any list/status endpoint. The ONLY bit of layer 3 that
+metadata consumers learn is the computed boolean `configured` ("a ciphertext row
+exists"), resolved in `services/secret_store.py` / `services/environment.py`.
+
+### environment_variables (Phase 5)
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| project_id | UUID → projects(id) | ON DELETE CASCADE |
+| key | TEXT NOT NULL | SCREAMING_SNAKE_CASE, CHECK `key ~ '^[A-Z][A-Z0-9_]*$'` |
+| description | TEXT | shown next to the template entry, never a value |
+| required | BOOLEAN | default `false` — drives the `required_missing` status |
+| is_secret | BOOLEAN | default `true` — metadata only; secrets and non-secrets are stored alike |
+| created_by | UUID → users(id) | ON DELETE SET NULL |
+| created_at / updated_at | TIMESTAMPTZ | default `now()` |
+
+UNIQUE `(project_id, key)` — one DATABASE_URL per project.
+
+### environment_access (Phase 5)
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| environment_variable_id | UUID → environment_variables(id) | ON DELETE CASCADE |
+| user_id | UUID → users(id) | ON DELETE CASCADE — developers AND agents (`users.kind='agent'`) share the roster |
+| granted_by | UUID → users(id) | ON DELETE SET NULL |
+| created_at | TIMESTAMPTZ | default `now()` |
+
+UNIQUE `(environment_variable_id, user_id)` — grants are per-variable, never
+blanket project-member access.
+
+### scaffold_secrets (Phase 5 — NON-public schema)
+Created in its own schema so a `SELECT *` against `public.*` can never touch
+ciphertext, and PostgREST/anon clients — schema-scoped to `public` by default —
+have no path to it. `REVOKE ALL ON SCHEMA ... FROM anon/authenticated` (wrapped
+in exception-tolerant DO blocks: those roles don't exist on plain-Postgres rigs).
+
+`scaffold_secrets.keyring` — wrapping keys for pgcrypto PGP (AES-256):
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| name | TEXT UNIQUE | `'default'`, or the row named by `SCAFFOLD_SECRET_KEYRING` |
+| key_id | TEXT CHECK (char_length = 64) | 32 random bytes as HEX TEXT, generated INSIDE Postgres via `encode(gen_random_bytes(32), 'hex')` — the key never transits the engine process, env files, or logs |
+| created_at | TIMESTAMPTZ | default `now()` |
+
+`scaffold_secrets.environment_secrets` — the ONLY place a secret value exists:
+| column | type | notes |
+| --- | --- | --- |
+| environment_variable_id | UUID PK, FK → environment_variables(id) | ON DELETE CASCADE — no orphan ciphertext |
+| encrypted | BYTEA NOT NULL | `pgp_sym_encrypt(:value, keyring.key_id, 'cipher-algo=aes256')` executed SERVER-SIDE in one statement — the plaintext is a bind parameter and the ciphertext column, nothing else |
+| key_id | UUID → keyring(id) | which key wrapped this row (future re-encryption) |
+| updated_at | TIMESTAMPTZ | default `now()` |
+
+**Why not Supabase Vault:** evaluated first (Phase 5 probe, 2026-09-30). Vault
+exists on the project's Supabase instance, but its column-encryption internals
+(`_crypto_aead_det_noncegen`) require superuser privileges the engine's service
+role does not have — Vault writes FAIL. pgcrypto PGP encrypt/decrypt verified
+working with the engine role. Honest limitation: a database-resident key is the
+same trust tier as Vault's default key — anyone who can query BOTH `keyring`
+AND `environment_secrets` as the service role can decrypt. It protects against
+leakage through Scaffold's own surface (API responses, events, logs, dashboard,
+SQL dumps of `public`, embeddings, prompts). Upgrading to an external KMS later
+means swapping the two functions in `services/secret_store.py` only.
+
+New `events.type` values (additive, payloads value-free by construction):
+`env_variable_defined`, `env_value_set`, `env_access_granted`,
+`env_access_revoked`, `env_secret_requested`, `env_secret_access_denied`,
+`env_secret_retrieved`, `env_secret_rotated`, `env_variable_removed`,
+`env_variable_updated`.
 
 ## Changelog (append-only after Day 1)
 
@@ -158,3 +245,4 @@ CREATE INDEX idx_users_project_status ON users(project_id, membership_status);
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A): `tasks.status` CHECK widened to add `'review'` (`'todo'|'in_progress'|'review'|'done'`) — existing values untouched, this is a widening, not a rename. Additive nullable/defaulted columns on `tasks`: `description TEXT`, `priority TEXT DEFAULT 'medium'` (CHECK `'low'|'medium'|'high'|'urgent'`), `blocked BOOLEAN DEFAULT false`, `created_by UUID → users(id)`, `completed_at TIMESTAMPTZ`. Four new supporting indexes (above). `blockers` and `task_dependencies` added to the `supabase_realtime` publication (dashboard live updates for the Blockers panel and dependency chips). Applied by `engine/app/db/migrate_phase2.sql` (auto at engine startup, idempotent, chained after `migrate_day3.sql`). No tables renamed or dropped; `task_dependencies` (already frozen Day 1, previously unused by any route) is now read/written by the task routes.
 - 2026-09-30 — Phase 3 (team collaboration): additive only — `users` gains `kind` ('developer'|'agent'), `agent_provider`, `agent_model`, `agent_session_id`, `membership_status` ('active'|'removed'), `joined_at`; `projects` gains `owner_user_id` (FK → users, ON DELETE SET NULL). Two new indexes; `users` added to the `supabase_realtime` publication. No renames, no new tables — agents and developers share the existing `users` roster, and invitations still use the Day 5 stateless HMAC code (no invites table). Applied by `engine/app/db/migrate_phase3.sql` (auto at engine startup, idempotent).
 - 2026-09-30 — Phase 4 (intelligent coordination): **no schema changes** — coordination intelligence is pure computation over the existing tables (`tasks.status`/`blocked`/`priority`, `task_dependencies`, `blockers`, `api_contracts.created_by_task_id`, `users.kind`, `events`). No migration file; nothing new stored. The only new persistence is two new `events.type` values written by the human-override endpoints: `recommendation_accepted` and `recommendation_rejected` (payload `{task_id, user_id, title, note?}`) — event types are free-form by design; rejections are honored for 7 days by the recommender, not stored anywhere new.
+- 2026-10-01 — Phase 5 (secure environment & context, `feature/secure-environment`): two new `public` tables — `environment_variables` (per-project env schema: key/description/required/is_secret/created_by/timestamps, `UNIQUE(project_id, key)`, key-shape CHECK) and `environment_access` (per-variable grants, `UNIQUE(environment_variable_id, user_id)`) — plus the NON-public `scaffold_secrets` schema: `keyring` (pgcrypto wrapping keys, 32 random bytes as hex TEXT generated server-side) and `environment_secrets` (ciphertext rows, `pgp_sym_encrypt` AES-256, FK-cascaded so no orphan ciphertext). Four new indexes; both public tables added to the `supabase_realtime` publication; the secret schema is REVOKEd from `anon`/`authenticated`. Supabase Vault was evaluated first and REJECTED on this database (verified live): its AEAD column-encryption internals require superuser the engine role lacks — pgcrypto PGP works with the service role, so that is the mechanism (limitations in the Phase 5 section above). No frozen table/column changed. Applied by `engine/app/db/migrate_phase5.sql` (auto at engine startup, idempotent, verified 3× on the live DB, incl. a bytea→text keyring repair step for earlier revisions).

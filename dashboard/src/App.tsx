@@ -35,6 +35,8 @@ import ActivityFeed from "./components/ActivityFeed";
 import Team from "./components/Team";
 // Phase 4 (intelligent coordination) — deterministic next-actions panel.
 import NextActions from "./components/NextActions";
+// Phase 5 (secure environment) — configuration STATUS panel (never a value).
+import Environment from "./components/Environment";
 
 type Phase =
   | { kind: "idle" }
@@ -322,6 +324,13 @@ export default function App() {
             projectId={pidRef.current}
             members={phase.data.members}
             ownerUserId={phase.data.context.project.owner_user_id ?? null}
+            onChanged={refresh}
+          />
+
+          <Environment
+            projectId={pidRef.current}
+            ownerUserId={phase.data.context.project.owner_user_id ?? null}
+            members={phase.data.members.map((m) => ({ id: m.id, name: m.name, kind: m.kind }))}
             onChanged={refresh}
           />
 

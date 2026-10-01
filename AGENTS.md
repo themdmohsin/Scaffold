@@ -115,6 +115,7 @@ bun run --cwd packages/opencode src/index.ts --version   # -> local
 cd engine && python -m tests.test_day2   # diff parser, signed webhook, all 6 MCP tools
 cd engine && python -m tests.test_day3   # retrieval, /reason, context enrichment
 cd engine && python -m tests.test_phase4 # ready tasks, recommendations, next action, overrides
+cd engine && python -m tests.test_phase5 # secure environment: metadata, grants, secret store, non-disclosure
 
 # plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
 cd opencode-plugin && npm install && npm run typecheck

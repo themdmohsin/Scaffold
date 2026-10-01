@@ -23,12 +23,15 @@ from datetime import datetime
 
 from mcp.server.mcpserver import MCPServer
 
+from sqlalchemy import text
+
 from app.config import settings
-from app.db.models import ApiContract, Decision, Event, Task, User
+from app.db.models import ApiContract, Decision, EnvironmentVariable, Event, Project, Task, User
 from app.db.session import _init
 from app.routes.context import build_context
 from app.services import coordination as coord
 from app.services import coordination_data as cdata
+from app.services import environment as environment_service
 
 mcp = MCPServer("scaffold")
 
@@ -295,6 +298,146 @@ def get_recommended_task(user_id: str | None = None, project_id: str | None = No
             snap["open_conflicts"], cdata.utcnow(),
         )
         return {"recommendation": action, "alternates": [], "note": None}
+    finally:
+        db.close()
+
+
+# ---- Phase 5: secure environment tools (deterministic; no LLM) ----------------
+# Metadata + template + AUTHORIZED value retrieval. The value tools take the
+# AGENT's own users-row id (register via POST /projects/:id/agents) and return
+# values ONLY for variables that agent has a grant for — agents get their
+# scoped environment, never the project's whole secret set (Phase 5 Feature 10).
+# NOTE: the dashboard never calls these; GET /context stays value-free.
+
+
+@mcp.tool()
+def get_project_environment(project_id: str | None = None) -> dict:
+    """Project environment STATUS (metadata only — never a secret value):
+    which variables exist, required/optional, secret/non-secret, configured.
+    Use this to see what configuration a project needs."""
+    db = _db()
+    try:
+        pid = _resolve_project_id(project_id)
+        rows = (
+            db.query(EnvironmentVariable)
+            .filter(EnvironmentVariable.project_id == pid)
+            .order_by(EnvironmentVariable.key.asc())
+            .all()
+        )
+        variables = []
+        for v in rows:
+            configured = db.execute(
+                text(
+                    "SELECT 1 FROM scaffold_secrets.environment_secrets "
+                    "WHERE environment_variable_id = :id LIMIT 1"
+                ),
+                {"id": v.id},
+            ).first() is not None
+            variables.append(
+                {
+                    "key": v.key,
+                    "description": v.description,
+                    "required": v.required,
+                    "is_secret": v.is_secret,
+                    "configured": configured,
+                }
+            )
+        return {"project_id": str(pid), "variables": variables, "count": len(variables)}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def get_environment_template(project_id: str | None = None) -> dict:
+    """`.env.example` contents for the project: variable names with EMPTY values
+    (+ descriptions). Write it to the repo so teammates know what to configure."""
+    db = _db()
+    try:
+        pid = _resolve_project_id(project_id)
+        rows = (
+            db.query(EnvironmentVariable)
+            .filter(EnvironmentVariable.project_id == pid)
+            .order_by(EnvironmentVariable.key.asc())
+            .all()
+        )
+        content = "\n".join(f"{r.key}=" for r in rows)
+        descriptions = [{"key": r.key, "description": r.description} for r in rows]
+        return {
+            "project_id": str(pid),
+            "filename": ".env.example",
+            "variables": descriptions,
+            "content": content,
+            "count": len(rows),
+        }
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def request_environment_value(
+    key: str,
+    user_id: str | None = None,
+    project_id: str | None = None,
+) -> dict:
+    """AUTHORIZED retrieval of ONE environment value for an agent's own runtime.
+
+    Flow: membership check (user_id must be an active member/agent of the
+    project) -> per-variable grant check -> server-side decrypt -> value.
+    Denied (403-shaped error result) without a grant; audited either way.
+    The value goes to the CALLING RUNTIME only — never to dashboards, logs,
+    events, or other agents.
+    """
+    from fastapi import HTTPException
+
+    db = _db()
+    try:
+        pid = _resolve_project_id(project_id)
+        project = db.get(Project, pid)
+        if not project:
+            raise ValueError("project not found")
+        requester_id: uuid.UUID | None = None
+        if user_id:
+            uid = uuid.UUID(user_id)
+            user = db.get(User, uid)
+            if not user or user.project_id != pid or user.membership_status == "removed":
+                raise ValueError("user_id is not an active member of this project")
+            requester_id = uid
+        else:
+            # No user_id: fall back to the single-agent convention ONLY when the
+            # project has exactly one registered agent — keeps the demo ergonomic
+            # without ever widening access beyond that one agent.
+            agents = (
+                db.query(User)
+                .filter(User.project_id == pid, User.kind == "agent", User.membership_status == "active")
+                .all()
+            )
+            if len(agents) == 1:
+                requester_id = agents[0].id
+            else:
+                raise ValueError(
+                    "user_id is required (register the agent via POST /projects/:id/agents "
+                    "and pass its users-row id)"
+                )
+
+        var = (
+            db.query(EnvironmentVariable)
+            .filter(EnvironmentVariable.project_id == pid, EnvironmentVariable.key == key.strip())
+            .first()
+        )
+        if not var:
+            return {"found": False, "key": key}
+
+        try:
+            result = environment_service.request_secret(db, project, var, db.get(User, requester_id))
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                return {"authorized": False, "key": key, "detail": exc.detail}
+            if exc.status_code == 404:
+                return {"found": False, "configured": False, "key": key}
+            if exc.status_code == 503:
+                return {"error": exc.detail, "key": key}
+            raise
+        return {"authorized": True, "key": result["key"], "value": result["value"]}
     finally:
         db.close()
 

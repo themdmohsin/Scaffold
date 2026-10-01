@@ -1,4 +1,92 @@
 # HANDOFF
+## Current State — 2026-10-01 — Buffy (Phase 5 Secure Environment & Context COMPLETE on branch `feature/secure-environment`)
+
+The project can now answer "what configuration does this project require?" — and hand the RIGHT
+secret to the RIGHT agent/developer at runtime — without ever displaying or logging a value.
+Three strictly separated layers: metadata (`environment_variables`), permissions
+(`environment_access`), values (`scaffold_secrets.*`, non-public schema, pgcrypto AES-256,
+key generated server-side inside Postgres). Status (Configured / Required · Missing / Optional ·
+Not configured) is computed from a boolean, never a value. `GET /context` gains NOTHING env-
+related, so values can never reach embeddings, prompts, or `get_project_context()`. The plugin
+is UNCHANGED by design: values flow MCP → agent runtime directly, never through the plugin or
+the dashboard. Owner-gated mutations reuse the Phase 3 placeholder `requesting_user_id` model;
+retrieval requires active membership + a per-variable grant (no blanket member access).
+Supabase Vault was evaluated first and rejected on this DB (its AEAD internals need superuser;
+pgcrypto PGP works with the service role) — limitation honestly documented in SCHEMA.md.
+
+**Verified on hardware this session**: `python -m tests.test_phase5` **89/89** (pure units + DB-
+backed route legs incl. the non-disclosure sweeps over events/context/tasks/members + MCP over
+the real wire at 127.0.0.1:8907: authorized agent gets the value, second agent gets a structured
+`authorized:false` denial, ciphertext never contains plaintext, keyring never contains values),
+full regression green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43,
+test_phase3 40, test_phase4 125 — **373 passed, 0 failed** across all seven suites;
+`cd dashboard && npm run build` clean (tsc + vite); `cd opencode-plugin && node
+tests/verify_plugin.ts` 55/55 (plugin untouched). `npm run typecheck` has one PRE-EXISTING error
+in the vendored OpenCode SDK (`opencode/packages/sdk/js/src/gen/client/utils.gen.ts` `Headers.entries`,
+Node lib target) — not introduced by Phase 5, does not affect the functional gate.
+
+What's new (all additive; every frozen route/MCP tool/event untouched):
+- `engine/app/db/migrate_phase5.sql` — idempotent DDL (verified 3× on the live Supabase DB,
+  incl. a bytea→text keyring repair step for earlier revisions): `public.environment_variables`
+  (key-shape CHECK `^[A-Z][A-Z0-9_]*$`, UNIQUE(project_id,key)), `public.environment_access`
+  (UNIQUE(environment_variable_id,user_id)), 4 indexes, realtime publication for both public
+  tables, then `scaffold_secrets.keyring` (32-byte key as hex TEXT via `encode(gen_random_bytes(32),'hex')`)
+  + `scaffold_secrets.environment_secrets` (ciphertext FK-cascaded; no orphan rows), REVOKE ALL
+  from anon/authenticated (exception-tolerant DO blocks — roles may not exist off Supabase).
+- `engine/app/services/secret_store.py` — the ONLY module touching values. Encrypt/decrypt run
+  SERVER-SIDE in single statements (`pgp_sym_encrypt(..., 'cipher-algo=aes256')` / `pgp_sym_decrypt`);
+  the plaintext is a bind parameter + the ciphertext column, nothing else; the wrapping key is
+  resolved by an in-statement subquery and never selected into Python. Fail-closed:
+  `SecretStoreUnavailable` on a missing keyring (never a plaintext fallback).
+- `engine/app/services/environment.py` — deterministic L1/L2 logic: key validation
+  (SCREAMING_SNAKE_CASE), status words (configured / required_missing / optional_missing),
+  membership (`require_member` — active member of THIS project) + owner gates, grants, the
+  request flow (grant check precedes the configured check so configuration status never leaks
+  to non-granted users), env pull (granted-only, missing grants omitted silently), template
+  (KEY= lines only), audit readers. Ten new `env_*` event types — payloads value-free by
+  construction (values are not in scope in this module).
+- `engine/app/routes/environment.py` — 12 routes under `/projects/{id}/environment`: GET status
+  (both `/environment` and `/environment/`), POST/PATCH/DELETE variables (PATCH + value_changed
+  = rotation; permissions/metadata untouched), POST/GET/DELETE access, POST request, POST pull
+  (`.env.scaffold` body + never-commit warnings — the `scaffold env pull` transport), GET
+  template, GET audit.
+- MCP (additive; frozen eight untouched): `get_project_environment` (metadata + configured
+  booleans), `get_environment_template` (value-free), `request_environment_value(key, user_id?,
+  project_id?)` — the runtime carrier: `{authorized:true, key, value}` only for granted
+  members/agents, structured `{authorized:false, reason}` denial otherwise (NOT an error);
+  omitted `user_id` resolves only when exactly one active agent exists.
+- Dashboard: new `components/Environment.tsx` — status table with the three display words,
+  acting-as selector, define/rotate (password input — type-only, never read back)/remove,
+  per-variable grants view + grant/revoke, template viewer. NO code path renders a stored value.
+  `lib/api.ts` gained additive types + calls; CSS appended to `index.css`; one panel mount in
+  `App.tsx`.
+- New OPTIONAL env var: `SCAFFOLD_SECRET_KEYRING` (engine) — pins the active keyring row NAME;
+  the key material itself is always generated inside Postgres and never lives in an env file.
+  Added to `engine/.env.example`.
+
+CLI/OpenCode story: no separate CLI tool was built (repo rule — no new tool ecosystem). The
+`scaffold env pull` / `env status` / `env template` workflow rides the existing surfaces: the
+plugin already speaks MCP (`request_environment_value` = runtime injection for agents), and
+`POST /environment/pull` + `GET /environment/template` are the transport for a future thin CLI
+wrapper or curl-driven pull. `.env.scaffold` (never `.env`) is the generated file, with a
+review-before-use + never-commit header.
+
+Known limitations: DB-resident key = same trust tier as Vault's default — anyone who can query
+BOTH `keyring` AND `environment_secrets` as the service role can decrypt (KMS upgrade = swap the
+two functions in `secret_store.py` only); no real auth anywhere in the repo yet (the placeholder
+`requesting_user_id`/`user_id` trust model — values are only as protected as network access to
+the engine); grants are per (variable, user) — role/group-based grants and expiry are future
+work; no key-rotation RUNBOOK yet (the schema records each ciphertext row's `key_id`, so lazy
+re-encryption is possible, but no endpoint re-encrypts old rows).
+
+Next person should: re-run all eight suites on their machine (`python -m tests.test_phase5` is
+the new one; the migration auto-applies at engine startup, idempotent), open the dashboard →
+Environment panel, define DATABASE_URL with an initial value, grant it to a second member, and
+verify the status shows Configured with no value anywhere — then try `POST /environment/request`
+as the granted member (value comes back) and as the non-granted member (403 + a
+`env_secret_access_denied` audit event).
+
+---
 ## Current State — 2026-09-30 — Buffy (Phase 4 Intelligent Coordination MERGED to `main` via PR #12)
 
 Phase 4 (intelligent coordination) landed on `main` via [PR #12](https://github.com/themdmohsin/Scaffold/pull/12)

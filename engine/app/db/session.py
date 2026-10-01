@@ -51,6 +51,14 @@ def _apply_phase3_migration(engine: Engine) -> None:
     _apply_sql_migration(engine, "migrate_phase3.sql", "phase3 (team collaboration)")
 
 
+def _apply_phase5_migration(engine: Engine) -> None:
+    """Idempotent Phase 5 DDL (migrate_phase5.sql): the secure-environment
+    metadata/permission tables (public.environment_variables, public.environment_access),
+    the secret-value layer (scaffold_secrets schema: keyring + ciphertext), and
+    realtime publication for the metadata tables."""
+    _apply_sql_migration(engine, "migrate_phase5.sql", "phase5 (secure environment)")
+
+
 def _init() -> sessionmaker:
     global _engine, _SessionLocal
     if _SessionLocal is not None:
@@ -79,6 +87,7 @@ def _init() -> sessionmaker:
     _apply_day3_migration(_engine)
     _apply_phase2_migration(_engine)
     _apply_phase3_migration(_engine)
+    _apply_phase5_migration(_engine)
     return _SessionLocal
 
 
