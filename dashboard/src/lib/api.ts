@@ -374,3 +374,125 @@ export function rejectRecommendation(projectId: string, taskId: string, userId: 
   );
 }
 
+// --- Phase 5 (secure environment) additive types + calls --------------------
+// STATUS only: no response in this section can carry a secret value. Values
+// reach authorized runtimes via POST .../environment/request | /pull (engine),
+// which the dashboard never calls.
+
+export interface EnvVariableInfo {
+  id: string;
+  project_id: string;
+  key: string;
+  description: string | null;
+  required: boolean;
+  is_secret: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  configured: boolean;
+  status: "configured" | "required_missing" | "optional_missing";
+  display_status: string;
+}
+
+export interface EnvironmentSummary {
+  project_id: string;
+  project_name: string;
+  variables: EnvVariableInfo[];
+  summary: { total: number; configured: number; required_missing: number; optional_missing: number };
+}
+
+export interface EnvGrantInfo {
+  id: string;
+  environment_variable_id: string;
+  key: string;
+  user_id: string;
+  user_name: string | null;
+  granted_by: string | null;
+  created_at: string;
+}
+
+export interface EnvTemplate {
+  project_id: string;
+  project_name: string | null;
+  filename: string;
+  variables: { key: string; description: string | null }[];
+  content: string;
+  count: number;
+}
+
+export const fetchEnvironment = (projectId: string) =>
+  api<EnvironmentSummary>(`/projects/${projectId}/environment`);
+
+export interface EnvVariableCreateBody {
+  key: string;
+  description?: string;
+  required?: boolean;
+  is_secret?: boolean;
+  created_by?: string;
+  // One-way: consumed by the engine's secret store, never returned by any GET.
+  value?: string;
+}
+
+export function createEnvVariable(projectId: string, body: EnvVariableCreateBody) {
+  return api<EnvVariableInfo>(`/projects/${projectId}/environment/variables`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export interface EnvVariablePatchBody {
+  description?: string;
+  required?: boolean;
+  is_secret?: boolean;
+  // value + value_changed=true sets (or ROTATES) the stored value; permissions
+  // and metadata are untouched (Phase 5 Feature 9).
+  value?: string;
+  value_changed?: boolean;
+  requesting_user_id?: string;
+}
+
+export function patchEnvVariable(projectId: string, variableId: string, body: EnvVariablePatchBody) {
+  return api<EnvVariableInfo>(`/projects/${projectId}/environment/variables/${variableId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function removeEnvVariable(projectId: string, variableId: string, requestingUserId?: string) {
+  const qs = requestingUserId ? `?requesting_user_id=${encodeURIComponent(requestingUserId)}` : "";
+  return api<{ removed: boolean; id: string; key: string }>(
+    `/projects/${projectId}/environment/variables/${variableId}${qs}`,
+    { method: "DELETE" },
+  );
+}
+
+export interface EnvGrantBody {
+  environment_variable_id: string;
+  user_id: string;
+  granted_by?: string;
+  requesting_user_id?: string;
+}
+
+export function grantEnvAccess(projectId: string, body: EnvGrantBody) {
+  return api<EnvGrantInfo>(`/projects/${projectId}/environment/access`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export const fetchEnvAccess = (projectId: string, variableId: string) =>
+  api<EnvGrantInfo[]>(
+    `/projects/${projectId}/environment/access?environment_variable_id=${encodeURIComponent(variableId)}`,
+  );
+
+export function revokeEnvAccess(projectId: string, grantId: string, requestingUserId?: string) {
+  const qs = requestingUserId ? `?requesting_user_id=${encodeURIComponent(requestingUserId)}` : "";
+  return api<{ revoked: boolean; id: string }>(
+    `/projects/${projectId}/environment/access/${grantId}${qs}`,
+    { method: "DELETE" },
+  );
+}
+
+export const fetchEnvTemplate = (projectId: string) =>
+  api<EnvTemplate>(`/projects/${projectId}/environment/template`);
+

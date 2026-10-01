@@ -989,3 +989,223 @@ button:disabled {
   color: #484f58;
   font-size: 11px;
 }
+
+/* ---- Phase 5: Environment (secure environment) panel ---- */
+
+.env-note {
+  color: #8b949e;
+  font-size: 12px;
+  margin: 0 0 12px;
+  max-width: 720px;
+}
+
+.env-acting {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.env-acting select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.env-summary {
+  margin-left: auto;
+  color: #e6edf3;
+}
+
+.env-summary b {
+  font-weight: 600;
+}
+
+.env-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.env-table th {
+  text-align: left;
+  color: #8b949e;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-bottom: 1px solid #30363d;
+}
+
+.env-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #21262d;
+  vertical-align: top;
+}
+
+.env-row-secret code {
+  color: #e6edf3;
+}
+
+.env-desc {
+  color: #8b949e;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.env-status-ok {
+  color: #3fb950;
+}
+
+.env-status-missing {
+  color: #f85149;
+}
+
+.env-status-optional {
+  color: #8b949e;
+}
+
+.env-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: #4493f8;
+  cursor: pointer;
+}
+
+.env-link:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+.env-rotate {
+  display: flex;
+  gap: 6px;
+}
+
+.env-rotate input {
+  flex: 1;
+  min-width: 120px;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.env-rotate button {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.env-row-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.env-grants {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.env-grants h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.env-grants ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.env-grants li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.env-grants .env-link {
+  margin-left: auto;
+  color: #f85149;
+}
+
+.env-grant-form {
+  display: flex;
+  gap: 8px;
+}
+
+.env-grant-form select {
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.env-grant-form button {
+  font-size: 12px;
+  padding: 5px 12px;
+}
+
+.env-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.env-form {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.env-form h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+.env-form input[type="text"],
+.env-form input:not([type]),
+.env-form input[type="password"] {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.env-template {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  color: #3fb950;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.env-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

@@ -291,6 +291,78 @@ get_recommended_task(user_id? = null, project_id?)    → { recommendation, alte
 ```
 Both are deterministic (no LLM) and reuse the same pure service as the HTTP routes.
 
+### New Phase 5 MCP tools (additive — the eight frozen tools are untouched)
+```
+get_project_environment(project_id?)                    → { variables: [{ key, description, required,
+                                                            is_secret, configured, ... }], summary }
+                                                          metadata + configured BOOLEANS only — no value field exists
+get_environment_template(project_id?)                   → { filename, content, variables } — KEY= lines, never values
+request_environment_value(key, user_id? = null, project_id?)
+                                                          → { authorized: true, key, value } for a GRANTED agent/member
+                                                          → { authorized: false, reason } for everyone else (structured
+                                                            denial, NOT an error) — the runtime carrier for Feature 4/10;
+                                                          user_id omitted resolves ONLY when exactly one active agent exists
+```
+Deterministic (no LLM); grant/membership checks identical to the HTTP routes.
+Secret VALUES reach only the authorized agent's runtime through this one tool —
+never through get_project_context(), never through any other tool.
+
+## Secure environment routes (Phase 5 — additive, `feature/secure-environment`)
+
+Three strictly separated layers, matching the DB layers in `docs/SCHEMA.md`:
+metadata (status — NO values ever), permissions (grants), and values (only the
+two retrieval routes below may carry a value, and only after membership +
+per-variable grant checks). Owner-gated mutations use the same placeholder
+`requesting_user_id` model as Phase 3 (compared to `projects.owner_user_id`
+once an owner exists). Membership = an active `users` row on THIS project.
+```
+GET   /projects/:id/environment
+// → 200 { project_id, project_name, variables: [{ id, key, description, required,
+//        is_secret, configured, status, display_status, created_by, created_at, updated_at }],
+//        summary: { total, configured, required_missing, optional_missing } }
+// NO field can carry a value — pinned by tests/test_phase5.py. status ∈
+// configured | required_missing | optional_missing.
+POST  /projects/:id/environment/variables
+// request  { key, description?, required?, is_secret?, created_by?, value? }
+// → 201 variable object (same shape as above minus status); `value` is consumed
+//   by the secret store in-request, NEVER echoed. 400 bad key shape, 409 dup, 503 store down.
+PATCH /projects/:id/environment/variables/:variable_id
+// request  { description?, required?, is_secret?, value?, value_changed?, requesting_user_id? }
+// value_changed=true + value = SET (new) or ROTATE (existing) — metadata and grants
+// untouched. Response is the variable object, never the value.
+DELETE /projects/:id/environment/variables/:variable_id?requesting_user_id=
+// → { removed: true, id, key } — ciphertext removed with the metadata (no orphans).
+POST  /projects/:id/environment/access
+// request  { environment_variable_id, user_id, granted_by?, requesting_user_id? }
+// → 200 grant object { id, key, user_id, user_name, granted_by, created_at }.
+// 403 non-owner, 400 non-member target. Idempotent (re-grant returns the same row).
+GET   /projects/:id/environment/access?environment_variable_id=
+// → [ grant objects ] — who may retrieve what (metadata only).
+DELETE /projects/:id/environment/access/:grant_id?requesting_user_id=
+// → { revoked: true, id } — takes effect on the NEXT request (no cached access).
+POST  /projects/:id/environment/request
+// request  { key, user_id }   ← the agent/developer secret request (Feature 4)
+// → 200 { key, value } ONLY for granted active members — this and /pull are the
+//   only value carriers in the entire API. 403 no grant / not a member (grant check
+//   precedes the configured check, so configuration status never leaks),
+//   404 unknown key or defined-but-unconfigured, 503 store down.
+POST  /projects/:id/environment/pull
+// request  { user_id }   ← `scaffold env pull` transport (Feature 5)
+// → 200 { project_id, project_name, values: [{ key, value, description, is_secret }],
+//        granted_count, total_count, file_body, filename: ".env.scaffold", warnings }
+// values contains ONLY the caller's granted variables (no grant → omitted, never
+// an error). file_body is a ready-to-write .env.scaffold with a never-commit header.
+GET   /projects/:id/environment/template
+// → 200 { filename: ".env.example", content, variables: [{ key, description }], count }
+// content is KEY= lines ONLY — values are impossible here by construction.
+GET   /projects/:id/environment/audit?limit=50
+// → 200 { project_id, events: [{ id, type, payload, created_at }] } — env_* event
+// types only, newest first. Payloads record WHO/WHAT/OUTCOME, never a value.
+```
+Frozen-contract guarantees: `GET /projects/:id/context` gains NOTHING env-related
+(so `get_project_context()` and the AI prompt pipeline can never see a value);
+all Phase 1-4 routes are untouched.
+
 ## MCP server (Day 2 — LIVE at `/mcp`, streamable HTTP)
 The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention.
 ```
@@ -313,6 +385,9 @@ SCAFFOLD_TEAM_LLM_KEY=          # the team's own key, LiteLLM uses this (master 
 GITHUB_WEBHOOK_SECRET=
 GITHUB_TOKEN=                   # PAT fallback if GitHub App setup stalls
 DATABASE_URL=                   # Day 1 addition — Postgres pooler connection string so the engine can reach Supabase
+SCAFFOLD_SECRET_KEYRING=        # Phase 5 OPTIONAL — name of the active scaffold_secrets.keyring row;
+                                # unset = newest row (`default`). The KEY ITSELF is generated inside
+                                # Postgres and never lives in an env file.
 
 # dashboard/.env
 VITE_SUPABASE_URL=
@@ -344,6 +419,7 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 
 ## Changelog (append-only after Day 1)
 
+- 2026-10-01 — Phase 5 (secure environment & context, `feature/secure-environment`): the SECURE-CONFIGURATION layer on top of COORDINATE. New additive routes (full shapes in the new "Secure environment routes" section): `GET /projects/:id/environment` (status + summary, value-free by construction), `POST/PATCH/DELETE /projects/:id/environment/variables[/:variable_id]` (metadata + set/rotate value), `POST/GET/DELETE /projects/:id/environment/access[/:grant_id]` (per-variable grants), `POST /projects/:id/environment/request` (the agent/developer secret request — the only single-value carrier, after membership + grant checks, with audit events), `POST /projects/:id/environment/pull` (granted-only `.env.scaffold` generation — the `scaffold env pull` transport), `GET /projects/:id/environment/template` (`.env.example` KEY= lines, never values), `GET /projects/:id/environment/audit` (value-free access trail). `GET /projects/:id/context` intentionally gains NO env keys — secrets can never enter embeddings, prompts, or `get_project_context()`. Three additive MCP tools: `get_project_environment`, `get_environment_template`, `request_environment_value` (authorized-only value; structured denial). New event types (all value-free): `env_variable_defined`, `env_value_set`, `env_access_granted`, `env_access_revoked`, `env_secret_requested`, `env_secret_access_denied`, `env_secret_retrieved`, `env_secret_rotated`, `env_variable_removed`, `env_variable_updated`. New tables + `scaffold_secrets` schema: see `docs/SCHEMA.md`. One new OPTIONAL env var: `SCAFFOLD_SECRET_KEYRING` (engine — pins the active keyring row name; the key material itself is generated inside Postgres, never in an env file). Plugin UNCHANGED by design — values flow MCP → agent runtime directly, never through the plugin or the dashboard. Verified: `python -m tests.test_phase5` 89/89 (pure units + DB-backed route legs incl. the non-disclosure sweeps over events/context/tasks/members/MCP and MCP over the real wire); full regression green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40, test_phase4 125 (373 passed, 0 failed); `dashboard && npm run build` clean. Dashboard: new Environment panel (`components/Environment.tsx`) — configuration status (Configured / Required · Missing / Optional · Not configured), define/rotate/remove, grant/revoke per variable, template viewer; acting-as selector; there is NO code path that displays a stored value.
 - 2026-09-30 — Phase 4 (intelligent coordination, `feature/intelligent-coordination`): the COORDINATE layer learns to answer "what should I work on?" and "what should happen next?" — deterministically first, AI only to explain. NO schema changes (pure computation over the existing tables; no migration file, nothing new stored — recommendation decisions are recorded as events only). New routes (all additive, see the "Intelligent coordination routes" section): `GET /projects/:id/tasks/ready`, `GET /projects/:id/recommendations`, `GET /projects/:id/recommendations/next`, `POST /projects/:id/recommendations/next` (project-level next action), `GET /projects/:id/coordination` (dashboard panel payload), and the human-override pair `POST /projects/:id/tasks/:task_id/accept-recommendation` / `POST .../reject-recommendation`. New `engine/app/services/coordination.py` (pure deterministic state classification READY/BLOCKED/WAITING_ON_DEPENDENCY/IN_PROGRESS/REVIEW/DONE, explainable scoring — priority/assignment/downstream-impact/deadline/age, every factor echoed as reasons — recommendation pipeline, project next action, overlap detection, cross-owner dependency awareness) + `coordination_data.py` (bounded plain-row loaders). Task states of record remain the existing `tasks.status`/`blocked`/`task_dependencies`/`blockers` columns; nothing is duplicated. Two additive MCP tools: `get_ready_tasks`, `get_recommended_task` (frozen six untouched). Two new event types: `recommendation_accepted`, `recommendation_rejected` (the only persistence — the human decision trail). LLM usage: one new fail-open helper `reasoning.explain_recommendation` (phrases already-decided facts into one sentence; only called with `explain=true`; reasoning.py remains the only LLM file). Human override: accept claims the task via the frozen `tasks.owner_id` assignment path (never automatic); reject suppresses the task for that member for 7 days (window constant in coordination.py). No new env vars. Verified: `python -m tests.test_phase4` 125/125 (pure units + DB-backed route legs incl. MCP over the wire); full regression re-run green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40 (248 passed, 0 failed); `dashboard && npm run build` clean. Dashboard: new Next Actions panel (`components/NextActions.tsx`) — recommended next step with Accept/Not-now override, READY TO START / BLOCKED / NEEDS REVIEW / CONFLICTS columns (incl. "Potential overlap detected" rows), who-is-doing-what footer; loads via one deterministic GET (no LLM on dashboard load), degrades silently against older engines.
 - 2026-09-30 — Phase 3 (team collaboration, `feature/team-collaboration`): new additive routes `GET /projects/:id/members`, `PATCH /projects/:id/members/:member_id`, `DELETE /projects/:id/members/:member_id`, `POST /projects/:id/agents`, `POST /projects/:id/owner` — full shapes in the new "Team collaboration routes" section above. AI agents are first-class `users` rows (`kind='agent'`, free-text `agent_provider`/`agent_model` — no vendor hardcoded). Task assignment reuses the existing frozen `tasks.owner_id` + `PATCH /projects/:id/tasks/:task_id` — no second task/assignment system. Activity status (`ACTIVE`/`IDLE`/`BLOCKED`/`OFFLINE`) is computed deterministically in `engine/app/services/team.py` from existing tasks/decisions/events — never an LLM call, never faked live presence. `GET /projects/:id/context` gains one ADDITIVE key on `project`: `owner_user_id` (null until `POST /owner` is called). Owner-gated mutations use a placeholder `requesting_user_id` field compared to `projects.owner_user_id` — not real auth (none exists yet anywhere in this API); becomes a real session identity once auth is wired in. No changes to Day 5 invite/join (still stateless HMAC codes, no invites table). New indexes + `users` columns (`kind`, `agent_provider`, `agent_model`, `agent_session_id`, `membership_status`, `joined_at`) and `projects.owner_user_id` — see `docs/SCHEMA.md`. No new env vars. Verified: `python -m tests.test_phase3` 40/40 (offline pure units + DB-backed route legs); full regression re-run clean — `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74 (205 total, 0 failed); `dashboard && npm run build` clean (tsc + vite). New dashboard Team panel (`components/Team.tsx`) is additive/isolated — roster table, invite/join/agent-registration mini-forms, owner/role/remove actions; `App.tsx` gained one new fetch (`fetchMembers`, degrades to an empty roster against older engines) and one new panel mount.
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A, branch `feature/project-control-center`): the task board + coordination layer. `GET/POST /projects/:id/tasks` and `PATCH /projects/:id/tasks/:task_id` gain ADDITIVE fields only (`description`, `priority`, `blocked`, `created_by`, `completed_at`, `dependencies`, `blocked_by_dependencies`, `is_blocked`); every Day 1 field on those routes is byte-identical, and `task_created`/`task_updated` events keep their frozen payload shape. `status` CHECK widened to add `'review'` (`todo|in_progress|review|done`). New routes: `POST`/`DELETE /projects/:id/tasks/:task_id/dependencies[/:depends_on_task_id]` (task_dependencies CRUD, idempotent) and `GET /projects/:id/users` (read-only roster for the assignee picker). `GET /projects/:id/context` gains two ADDITIVE keys: `task_counts` (todo/in_progress/review/done/blocked) and `open_conflicts` (unresolved blockers with no `task_id` — i.e. contract-shape conflicts, distinct from task-level blockers). New event types for the activity feed (all additional to, never replacing, the frozen `task_created`/`task_updated`): `task_status_changed`, `task_completed`, `task_assigned`, `task_priority_changed`, `task_blocked`, `task_unblocked`, `task_dependency_added`, `task_dependency_removed`. No env var changes. No existing route, MCP tool, or event type removed or renamed.

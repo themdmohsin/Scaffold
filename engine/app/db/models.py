@@ -195,3 +195,52 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 (secure environment) — metadata + permission tables ONLY. The secret
+# VALUE layer (scaffold_secrets.environment_secrets + .keyring) is deliberately
+# NOT mapped as an ORM model: services/secret_store.py is the single writer and
+# reader of ciphertext, so no accidental `SELECT *` can ever drag a value into
+# application memory or a response serializer (see docs/SCHEMA.md Phase 5).
+# ---------------------------------------------------------------------------
+
+
+class EnvironmentVariable(Base):
+    __tablename__ = "environment_variables"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EnvironmentAccess(Base):
+    __tablename__ = "environment_access"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    environment_variable_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("environment_variables.id"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    granted_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
