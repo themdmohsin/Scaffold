@@ -216,6 +216,85 @@ Next person should: merge Phase 2 first (it's further along / already reviewed p
 
 ---
 
+## Current State — 2026-09-28 — OpenCode (PR #6 merged; the last unproven leg PASSED — and it uncovered a real bug; model fallback chain; demo project reset to pristine)
+
+Worked the day6/7 leftover list from `docs/next-session-prompt.md` top to bottom. Branch
+`day7-mk-plugin-verification` off `main` (PR #6 merged first, fast-forward, branch deleted).
+
+**1. The one unproven leg — a real OpenCode fork session through the plugin — PASSED, and it
+found a real bug.** Scratch worktree (`git init` + `.opencode/plugins/scaffold.ts` copied in),
+engine at `localhost:8000`, `bun run <abs path to packages/opencode/src/index.ts> run "..."
+--model anthropic/claude-sonnet-5` with the shell's cwd set to the scratch dir (NOT `--dir`:
+`run.ts` resolves `InstanceRef` from `process.cwd()` *before* its own `--dir` chdir runs, so
+`--dir` only works together with `--attach`; for a local run just cwd into the target directory
+before invoking bun — the earlier "hangs silently" report was actually this: `--dir` pointed
+`process.chdir` nowhere useful, the instance loaded the wrong project, so nothing looked wrong
+but nothing happened either). With cwd fixed, the session ran cleanly: agent wrote
+`routes_echo.py` (a `POST /api/echo` FastAPI router), `tool.execute.after` reported it, DB shows
+`change_reported {"diff_summary": "wrote routes_echo.py (created, 342 bytes)", ...}`. **Then the
+second half of the proof failed**: a fresh second session's injected context block did NOT
+mention the change, chars stayed at 715 — because `renderContextBlock` in
+`opencode-plugin/.opencode/plugins/scaffold.ts` never read `context.blockers` or
+`context.recent_events` at all, despite this file's own 2026-09-26 entry claiming "MCP
+`get_project_context()` inherits both keys so agents see the conflict too" (line ~184 below) —
+the engine returned the keys, the plugin silently dropped them. **Fixed**: `renderContextBlock`
+now renders open `blockers` (capped 5, un-resolved only) and `recent_events` filtered to
+`change_reported`/`commit_ingested` (capped 5) as "OPEN BLOCKERS" / "Recent changes from
+teammates' sessions" sections, still bounded by the existing 2400-char `truncate()`. Re-ran the
+second session: block grew 715 → 1085 chars and now reads (verbatim, via
+`python opencode-plugin/tests/acceptance_live.py`):
+```
+OPEN BLOCKERS — a teammate's change conflicts with something; resolve before continuing:
+- [CONFLICT] conflicting shape: incoming POST /api/auth/login vs registered POST /api/auth/login
+Recent changes from teammates' sessions:
+- wrote routes_echo.py (created, 342 bytes)
+- commit 5173f15: routes GET /api/test/scaffold-v2
+- commit c7b7de5: routes GET /api/test/scaffold
+```
+This is the actual headline claim of the product ("live shared awareness ... so agents stop
+inventing conflicting designs") and it was not happening before today. Pinned by 4 new
+`verify_plugin.ts` checks (open blocker rendered, resolved blocker excluded, teammate's
+`change_reported` rendered, non-change events like `teammate_joined` excluded) — 59/59 green;
+`acceptance_live.py` and `acceptance_live.py --self-test` both still pass against the live
+engine; `mcp_sdk_interop.py` 16/17 (the 1 fail — `plugin driver exited cleanly`, exit
+3221226505 — is pre-existing Windows/Node `uv` teardown noise, reproduced identically on `main`
+before this change, unrelated to the plugin). `npm run typecheck` has one pre-existing failure in
+vendored `packages/sdk/js` (`Headers.entries` under this TS lib target) — also reproduced on
+`main`, not touched.
+
+**2. Model fallback chain added to `engine/app/services/reasoning.py`** (the only LLM file,
+repo rule #1). `_completion_with_fallback` tries `SCAFFOLD_LLM_MODEL` first (with the existing
+503/429/timeout retry), then walks `FALLBACK_MODELS = [gemini/gemini-3.1-flash-lite,
+gemini/gemini-3.7-flash, gemini/gemini-3.8-flash]` on a 404/"model unavailable"/exhausted-retry
+error; the first model that answers is cached process-wide (`_model_cache["winner"]`) so later
+calls skip straight to it instead of re-probing a dead model every time. Both `summarize_diff`
+and `answer_prompt` route through it now (previously only `answer_prompt` retried, and neither
+fell back across models). Non-transient errors (bad key, etc.) still fail fast, unchanged. Pinned
+by 9 new `test_day3.py` checks (classifier units, candidate ordering + cache-to-front, and two
+e2e `/reason` calls proving a dead configured model falls back and a second call reuses the
+cached winner) — no new env vars, `SCAFFOLD_LLM_MODEL` unchanged as the first-choice override.
+
+**3. Demo project reset to pristine.** Project `fdcb7511-434b-40c1-a391-0cd45e2150a5` had the
+prior session's dry-run artifacts (2 extra `POST /api/auth/login` contracts, the `[CONFLICT]`
+blocker + its `conflict_flagged`/`contract_registered`×2 events, the "Laptop B (dry-run)" user +
+its `teammate_joined` event, the "Implement password-reset logic" task + its `task_created`
+event) plus this session's own `routes_echo.py` proof-run `change_reported` event — all deleted
+by exact row id (not a blanket wipe). Verified after: 2 tasks (the 2 originals), 1 decision, 3
+contracts (`/api/test/scaffold`, `/api/test/scaffold-v2`, `/api/payments/checkout`), 0 blockers,
+8 events (the original seed events only). Re-verified untouched after running all four suites
+(they use their own `dayX-test-*` / fixture projects, not the demo default).
+
+**Suites: 172/172** (day2 31, day3 42 [+7 from the fallback chain], day4b 25, day5 74) against
+live Supabase — all green, engine untouched otherwise.
+
+**Still open / not attempted this session:**
+- GitHub PAT still lacks Issues:read-write on themdmohsin/Scaffold — issue #5 stays open (user-side, per repo owner's GitHub settings — not something an agent session can fix).
+- The two-real-laptops pass (`docs/day5-integration-runbook.md`) needs a second physical/VM machine — only one machine was available this session; the single-host equivalents (this session's plugin proof + the 2026-09-26 dry-run) are the closest available substitute.
+- `day7-mk-plugin-verification` is pushed and PR #8 into `main` is open as of this entry — merge it before starting new work.
+- The pre-existing `mcp_sdk_interop.py` exit-code flake and the vendored-SDK `npm run typecheck` failure are real but out of scope (not caused by, or fixable via, this repo's own code) —noted so nobody re-investigates them as new regressions.
+
+---
+
 ## Current State — 2026-09-28 — Buffy (single-host dry-run PASS; Gemini model swap; real fork session STILL unproven)
 
 Runbook dry-run on the live stack (engine 0.0.0.0:8000 + dashboard): invite → join 201,

@@ -51,6 +51,11 @@ const MAX_ACTIVE_TASKS = 8
 const MAX_PINNED_CONTRACTS = 6
 const MAX_ROUTES_PER_CALL = 3
 const MAX_SCHEMA_CHARS = 240
+const MAX_BLOCKERS = 5
+const MAX_RECENT_CHANGES = 5
+/** Event types worth surfacing as "what a teammate's agent just did" — everything
+ * else in recent_events (task_created, teammate_joined, ...) is noise for this block. */
+const CHANGE_EVENT_TYPES = new Set(["change_reported", "commit_ingested"])
 /** After repeated engine failures, stop calling for a while instead of stalling hooks. */
 const FAILURE_BACKOFF_MS = 60_000
 /** Parked report_change payloads kept for replay when the engine recovers. */
@@ -272,6 +277,22 @@ function briefSchema(value: unknown): string {
   return text ? truncate(text.replace(/\s+/g, " "), MAX_SCHEMA_CHARS) : ""
 }
 
+/** One-line rendering of a change_reported/commit_ingested event's payload. */
+function describeChangeEvent(event: any): string {
+  const payload = event?.payload ?? {}
+  if (event?.type === "change_reported" && typeof payload.diff_summary === "string") {
+    return payload.diff_summary
+  }
+  if (event?.type === "commit_ingested") {
+    const routes = Array.isArray(payload.routes_added)
+      ? payload.routes_added.map((r: any) => `${r?.method ?? "?"} ${r?.route ?? "?"}`).join(", ")
+      : ""
+    const sha = typeof payload.sha === "string" ? payload.sha.slice(0, 7) : "?"
+    return routes ? `commit ${sha}: routes ${routes}` : `commit ${sha}: ${payload.files_changed ?? 0} file(s) changed`
+  }
+  return event?.type ?? "change"
+}
+
 type PinnedContract = { route: string; method: string; detail: string; at: number }
 
 /** The bounded, always-on block injected into the system prompt (repo rule #6). */
@@ -314,6 +335,24 @@ function renderContextBlock(context: any, pins: Map<string, PinnedContract>): st
   if (contracts.length) {
     lines.push("Registered API contracts — match these exactly:")
     for (const contract of contracts) lines.push(`- ${contract?.method ?? "?"} ${contract?.route ?? "?"}`)
+  }
+
+  // Day 5 added these to GET /context and get_project_context() so the conflict
+  // moment (open blocker) and a teammate's just-made change are visible through
+  // the endpoint every client already polls — render them here too, or an agent
+  // never actually sees either (the engine returning the keys is not enough).
+  const blockers = Array.isArray(context.blockers) ? context.blockers.filter((b: any) => !b?.resolved).slice(0, MAX_BLOCKERS) : []
+  if (blockers.length) {
+    lines.push("OPEN BLOCKERS — a teammate's change conflicts with something; resolve before continuing:")
+    for (const blocker of blockers) lines.push(`- ${blocker?.description ?? ""}`)
+  }
+
+  const changes = Array.isArray(context.recent_events)
+    ? context.recent_events.filter((e: any) => CHANGE_EVENT_TYPES.has(e?.type)).slice(0, MAX_RECENT_CHANGES)
+    : []
+  if (changes.length) {
+    lines.push("Recent changes from teammates' sessions:")
+    for (const change of changes) lines.push(`- ${describeChangeEvent(change)}`)
   }
 
   const pinned = [...pins.values()]

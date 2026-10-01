@@ -58,6 +58,25 @@ check("non-dict tasks dropped", r["suggested_tasks"] == [], str(r))
 check("_is_transient flags 503/429/timeout/connection", reasoning._is_transient(RuntimeError("HTTP 503 service unavailable")) and reasoning._is_transient(RuntimeError("rate limit 429")) and reasoning._is_transient(RuntimeError("request timed out")) and reasoning._is_transient(RuntimeError("connection reset")))
 check("_is_transient passes auth/config errors", not reasoning._is_transient(RuntimeError("invalid api key")) and not reasoning._is_transient(RuntimeError("SCAFFOLD_TEAM_LLM_KEY is not set")))
 
+# model-fallback classifier + candidate ordering (dead model vs. transient hiccup)
+check(
+    "_is_model_unavailable flags 404/not-found/no-longer-available",
+    reasoning._is_model_unavailable(RuntimeError("404 model not found"))
+    and reasoning._is_model_unavailable(RuntimeError("no longer available to new users"))
+    and not reasoning._is_model_unavailable(RuntimeError("HTTP 503 service unavailable")),
+)
+reasoning._model_cache.clear()
+order = reasoning._candidate_models()
+check(
+    "candidate order: configured model first, no duplicates",
+    order[0] == reasoning.chat_model() and len(order) == len(set(order)),
+    str(order),
+)
+reasoning._model_cache["winner"] = reasoning.FALLBACK_MODELS[1]
+order2 = reasoning._candidate_models()
+check("cached winner moved to front on next call", order2[0] == reasoning.FALLBACK_MODELS[1], str(order2))
+reasoning._model_cache.clear()
+
 # ---------------------------------------------------------------------------
 # 2. Fixtures: project + decisions/contracts in the real DB
 # ---------------------------------------------------------------------------
@@ -201,8 +220,42 @@ try:
     r_hard = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "no retry please"})
     check("non-transient provider error -> 502", r_hard.status_code == 502, str(r_hard.status_code))
     check("non-transient provider error not retried (1 call)", hard.calls == 1, str(hard.calls))
+
+    # Model fallback chain: the configured model 404s ("no longer available to
+    # new users"), so the next candidate should answer instead — and its
+    # winning model gets cached for the rest of the process (no re-probe).
+    reasoning._model_cache.clear()
+    calls_by_model: list[str | None] = []
+
+    class _ModelAware:
+        def __call__(self, **kwargs):  # noqa: ANN003
+            model = kwargs.get("model")
+            calls_by_model.append(model)
+            if model == reasoning.chat_model():
+                raise RuntimeError("404 model not found: no longer available to new users")
+            return _FAKE_COMPLETION
+
+    reasoning.completion = _ModelAware()  # type: ignore[assignment]
+    r_fb = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "fallback please"})
+    check("dead configured model falls back to a candidate", r_fb.status_code == 200 and r_fb.json().get("answer"), str(r_fb.status_code))
+    check(
+        "fallback tried configured model first, then a FALLBACK_MODELS entry",
+        calls_by_model[:1] == [reasoning.chat_model()] and calls_by_model[1] in reasoning.FALLBACK_MODELS,
+        str(calls_by_model),
+    )
+    check("winning model cached", reasoning._model_cache.get("winner") == calls_by_model[1], str(reasoning._model_cache))
+
+    calls_by_model.clear()
+    r_fb2 = client.post(f"/projects/{PID_STR}/reason", json={"prompt": "fallback again"})
+    check(
+        "subsequent call skips straight to the cached winner",
+        r_fb2.status_code == 200 and calls_by_model[:1] == [reasoning._model_cache.get("winner")],
+        str(calls_by_model),
+    )
+    reasoning._model_cache.clear()
 finally:
     reasoning.completion = orig_completion  # type: ignore[assignment]
+    reasoning._model_cache.clear()
 
 # ---------------------------------------------------------------------------
 # 4. Context placeholders filled (deterministic, no LLM)

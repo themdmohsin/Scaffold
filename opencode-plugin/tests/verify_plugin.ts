@@ -48,6 +48,14 @@ const FIXTURE_CONTEXT = {
     { id: "d6", text: "DECISION_SIX_SHOULD_BE_CAPPED", created_at: "2026-09-24T10:00:00+00:00" },
   ],
   relevant_contracts: [{ route: "/api/auth/session", method: "GET" }],
+  blockers: [
+    { id: "b1", description: "conflicting_shape on POST /api/auth/login", resolved: false, created_at: "2026-09-28T10:00:00+00:00" },
+    { id: "b2", description: "RESOLVED_BLOCKER_SHOULD_NOT_APPEAR", resolved: true, created_at: "2026-09-28T09:00:00+00:00" },
+  ],
+  recent_events: [
+    { id: "e1", type: "change_reported", payload: { diff_summary: "wrote routes_echo.py (created, 342 bytes)", files_changed: ["routes_echo.py"] }, created_at: "2026-09-28T11:00:00+00:00" },
+    { id: "e2", type: "teammate_joined", payload: { name: "Laptop B" }, created_at: "2026-09-28T10:30:00+00:00" },
+  ],
   generated_at: "2026-09-25T09:00:00+00:00",
 }
 
@@ -245,6 +253,10 @@ check("block names the project and goal", block.includes("Scaffold Demo") && blo
 check("block carries task counts", block.includes("3 todo"))
 check("block carries recent decisions", block.includes("/api/auth/login returning { token }"))
 check("block carries registered contracts", block.includes("GET /api/auth/session"))
+check("block carries open blockers", block.includes("conflicting_shape on POST /api/auth/login"))
+check("resolved blockers are excluded", !block.includes("RESOLVED_BLOCKER_SHOULD_NOT_APPEAR"))
+check("block carries a teammate's reported change", block.includes("wrote routes_echo.py"))
+check("non-change events (teammate_joined) are not rendered as changes", !block.includes("Laptop B"))
 check("active tasks capped at 8", !block.includes("TASK_EIGHT_SHOULD_BE_CAPPED"))
 check("decisions capped at 5", !block.includes("DECISION_SIX_SHOULD_BE_CAPPED"))
 check(
