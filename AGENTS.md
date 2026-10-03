@@ -11,13 +11,17 @@ Scaffold — a coding interface (forked from OpenCode) that gives teammates' AI 
 ```
 engine/            FastAPI backend
   app/main.py
-  app/db/          schema.sql, models.py
+  app/db/          schema.sql, models.py, migrations.py (ordered manifest runner)
   app/routes/       tasks.py, decisions.py, context.py, github_webhook.py
   app/services/     retrieval.py, reasoning.py, diff_parser.py
+  app/scripts/      migrate.py, bootstrap_db.py, seed.py, backfill_embeddings.py
   app/mcp_server.py
+  Dockerfile, fly.toml
 dashboard/          React + Vite frontend
+  Dockerfile, nginx.conf, fly.toml
 opencode-plugin/     the OpenCode fork + hook plugin
-docs/               SCHEMA.md, API_CONTRACTS.md, HANDOFF.md
+docs/               SCHEMA.md, API_CONTRACTS.md, HANDOFF.md, DEPLOYMENT.md, OPERATIONS.md
+docker-compose.yml   root — engine + dashboard (+ optional local-db profile)
 ```
 
 ## Frozen contracts — use these exact names, never invent your own
@@ -56,6 +60,12 @@ GET    /projects
 GET    /projects/:id/invites
 DELETE /projects/:id/invites/:invite_id
 ```
+
+**Day 9 additions**: `GET /ready` (readiness probe — DB + migration manifest; 503 until both
+are good; `/health` stays pure liveness). Every response carries `X-Request-Id`. Rate
+limiting returns `429` + `Retry-After` on auth/reason/secret scopes. Migrations run via
+`engine/app/db/migrations.py` (ordered manifest, recorded in `schema_migrations` — never
+edit an applied file, append a new version instead).
 `POST /projects` now creates the project owned by the caller; `POST /projects/join` and `POST /projects/:id/invite` stay as-frozen but are JWT/admin-gated. **Every route and MCP tool requires `Authorization: Bearer <Supabase JWT or scaffold_… PAT>`; identity is never read from a body/query** (legacy `requesting_user_id`/`user_id` fields are accepted-but-ignored). Exceptions: `GET /health` (liveness) and `POST /projects/:id/github-webhook` (GitHub HMAC signature — GitHub cannot carry a user credential). 401 unauthenticated, 403 non-member/role too low, 503 when `SUPABASE_JWT_SECRET` is unset (fail closed).
 
 **MCP tool names** (`engine/app/mcp_server.py`) — the OpenCode plugin calls these verbatim, do not rename:
@@ -75,10 +85,14 @@ get_recommended_task(user_id: str | None)
 SUPABASE_URL, SUPABASE_SERVICE_KEY, SCAFFOLD_TEAM_LLM_KEY,
 GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN,
 SUPABASE_JWT_SECRET, SCAFFOLD_CORS_ORIGINS, SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS
+SCAFFOLD_ENV, SCAFFOLD_LOG_FORMAT, SCAFFOLD_LOG_LEVEL,
+SCAFFOLD_RATE_LIMIT_ENABLED, SCAFFOLD_RATE_LIMIT_AUTH_PER_MINUTE,
+SCAFFOLD_RATE_LIMIT_REASON_PER_MINUTE, SCAFFOLD_RATE_LIMIT_SECRET_PER_MINUTE,
+SCAFFOLD_TRUST_PROXY
 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_ENGINE_URL
 SCAFFOLD_ENGINE_URL, SCAFFOLD_TOKEN
 ```
-(`SUPABASE_JWT_SECRET` verifies Supabase Auth JWTs — required, else 503 fail-closed. `SCAFFOLD_CORS_ORIGINS` = comma-separated browser origins, empty = wildcard dev-only. `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` = DEV/SEED only, auto-promotes listed Supabase user ids to owner. `SCAFFOLD_TOKEN` = the plugin's PAT, sent as `Authorization: Bearer` on every MCP call.)
+(`SUPABASE_JWT_SECRET` verifies Supabase Auth JWTs — required, else 503 fail-closed. `SCAFFOLD_CORS_ORIGINS` = comma-separated browser origins, empty = wildcard dev-only. `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` = DEV/SEED only, auto-promotes listed Supabase user ids to owner. `SCAFFOLD_TOKEN` = the plugin's PAT, sent as `Authorization: Bearer` on every MCP call. `SCAFFOLD_ENV=production` makes startup config validation fatal; `SCAFFOLD_LOG_FORMAT`/`LEVEL` control structured logs; `SCAFFOLD_RATE_LIMIT_*` tune the in-process limiter (see `docs/OPERATIONS.md`); `SCAFFOLD_TRUST_PROXY=1` only behind Fly/Railway.)
 
 ## Tech stack — do not substitute without asking a human
 
@@ -115,6 +129,10 @@ cd engine && pip install -r requirements.txt && uvicorn app.main:app --reload
 cd engine && python -c "from starlette.testclient import TestClient; from app.main import app; print(TestClient(app).get('/health').json())"
 # engine seed (requires engine/.env with DATABASE_URL + schema applied)
 cd engine && python -m app.scripts.seed
+# engine migrations (ordered manifest; --status/--check/--strict/--retry-skipped)
+cd engine && python -m app.scripts.migrate --status
+# from-zero bootstrap (extensions, schema, migrations, realtime publication; --lenient for plain PG)
+cd engine && python -m app.scripts.bootstrap_db
 # engine backfill embeddings (requires SCAFFOLD_TEAM_LLM_KEY; idempotent)
 cd engine && python -m app.scripts.backfill_embeddings
 
@@ -122,6 +140,10 @@ cd engine && python -m app.scripts.backfill_embeddings
 cd dashboard && npm install && npm run dev
 # dashboard typecheck + production build
 cd dashboard && npm run build
+
+# deploy (see docs/DEPLOYMENT.md for the full path)
+docker compose config                      # validate the compose file (no daemon needed)
+cd engine && fly deploy                    # Fly.io — engine/fly.toml, secrets set once
 
 # opencode fork (the Scaffold client) — run from source
 cd opencode-plugin/opencode && bun install --ignore-scripts
@@ -137,6 +159,7 @@ cd engine && python -m tests.test_phase3 # team: roster, agents, ownership
 cd engine && python -m tests.test_phase4 # ready tasks, recommendations, next action, overrides
 cd engine && python -m tests.test_phase5 # secure environment: metadata, grants, secret store, non-disclosure
 cd engine && python -m tests.test_auth   # Phase 6: JWT/PAT credentials, 401/403/role gates, invites, RLS
+cd engine && python -m tests.test_deploy # Day 9: migrations, /ready, rate limits, redaction, config
 
 # plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
 cd opencode-plugin && npm install && npm run typecheck
