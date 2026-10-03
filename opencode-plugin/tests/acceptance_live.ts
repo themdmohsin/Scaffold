@@ -70,4 +70,6 @@ console.log(
     reportsToasted: reported,
   })}`,
 )
-process.exit(0)
+// exitCode, not process.exit(): forcing an exit while undici's keep-alive sockets
+// are open crash-fails Node 24 on Windows (0xC0000409).
+process.exitCode = 0

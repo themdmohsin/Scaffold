@@ -38,6 +38,7 @@ from app.routes.tasks import _task_out
 from app.services import coordination as coord
 from app.services import coordination_data as cdata
 from app.services import reasoning
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["coordination"])
 
@@ -98,12 +99,13 @@ def get_ready_tasks(
     project_id: uuid.UUID,
     user_id: str | None = None,
     explain: bool = False,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """Deterministic ready-task detection. Ready = todo, not blocked, all
     dependencies complete — assigned OR unassigned (unassigned = claimable).
     Ordered by the explainable ranker; `reasons` on every row."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     requester = _require_member(db, project_id, user_id)
     snap = cdata.load_snapshot(db, project_id)
 
@@ -189,11 +191,12 @@ def get_recommendations(
     project_id: uuid.UUID,
     user_id: str | None = None,
     explain: bool = False,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """"What should I work on?" for one member (developer or agent). Pass
     ?user_id=<roster member> — agents call this with their own users-row id."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     requester = _require_member(db, project_id, user_id)
     return _recommendation_payload(db, project_id, requester.id if requester else None, explain)
 
@@ -203,11 +206,12 @@ def get_next_recommendation(
     project_id: uuid.UUID,
     user_id: str | None = None,
     explain: bool = False,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """The single best next move for the requester — the same deterministic
     engine as /recommendations, trimmed to the top recommendation."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     requester = _require_member(db, project_id, user_id)
     payload = _recommendation_payload(db, project_id, requester.id if requester else None, explain)
     return {
@@ -226,12 +230,15 @@ class NextActionRequest(BaseModel):
 
 @router.post("/recommendations/next")
 def post_next_action(
-    project_id: uuid.UUID, body: NextActionRequest, db: Session = Depends(get_db)
+    project_id: uuid.UUID,
+    body: NextActionRequest,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Project-level recommendation: "What should happen next in this project?"
     Deterministic precedence: resolve conflict > review > unblock > start.
     Optional user_id scopes the honest fallback note, nothing else."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     requester = _require_member(db, project_id, body.user_id)
     snap = cdata.load_snapshot(db, project_id)
 
@@ -253,12 +260,13 @@ def post_next_action(
 @router.get("/coordination")
 def get_coordination_summary(
     project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """One bounded payload for the dashboard's Next Actions panel: ready /
     blocked / needs review / conflicts / recommended next step. Deterministic
     only — safe to call on every dashboard load (no LLM here, ever)."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     snap = cdata.load_snapshot(db, project_id)
 
     incomplete = coord.incomplete_deps_per_task(snap["tasks"], snap["dep_edges"])
@@ -355,6 +363,7 @@ def accept_recommendation(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
     body: RecommendationDecision,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """    Human override — ACCEPT. Claims the recommended task for the deciding
@@ -364,7 +373,7 @@ def accept_recommendation(
     Re-accepting the same task by the same member is idempotent (200, nothing
     changes); accepting a task owned by someone else reassigns it (also 200 —
     a human decision wins over a previous assignment)."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     task = _require_task(db, project_id, task_id)
     member = _require_member(db, project_id, body.user_id)
 
@@ -410,13 +419,14 @@ def reject_recommendation(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
     body: RecommendationDecision,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """Human override — REJECT. Records the decision as an event; the
     deterministic recommender excludes this task for this member for 7 days
     (services/coordination.rejected_task_ids_from_events). Nothing else
     changes — no status flip, no assignment, fully reversible by accepting."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     task = _require_task(db, project_id, task_id)
     member = _require_member(db, project_id, body.user_id)
 

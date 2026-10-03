@@ -17,6 +17,9 @@
  *
  * Env (frozen in docs/API_CONTRACTS.md):
  *   SCAFFOLD_ENGINE_URL — where the Scaffold engine lives.
+ *   SCAFFOLD_TOKEN      — personal access token (scaffold_…). Sent as
+ *                         `Authorization: Bearer` on every MCP call; the engine
+ *                         resolves the caller's identity + membership from it.
  *
  * Hard rules honored here:
  *   #2/#3 — the diff summary is derived deterministically from the tool result
@@ -34,6 +37,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 const ENGINE_URL = (process.env.SCAFFOLD_ENGINE_URL ?? "http://localhost:8000").replace(/\/+$/, "")
+// Phase 6 real auth: PAT credential for the engine (Authorization: Bearer).
+const ENGINE_TOKEN = process.env.SCAFFOLD_TOKEN ?? ""
 const MCP_URL = `${ENGINE_URL}/mcp`
 
 const MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -149,6 +154,9 @@ class ScaffoldMcp {
     }
     // A stale session id would 404 the whole loop; initialize must go out clean.
     if (this.sessionId && method !== "initialize") headers["mcp-session-id"] = this.sessionId
+    // Phase 6: every MCP call carries the PAT — identity/membership is resolved
+    // from it server-side. Absent token ⇒ the engine 401s (fail closed).
+    if (ENGINE_TOKEN) headers["authorization"] = `Bearer ${ENGINE_TOKEN}`
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), MCP_TIMEOUT_MS)
@@ -747,6 +755,7 @@ export const ScaffoldPlugin: Plugin = async ({ project, client, directory, workt
     "shell.env": async (input: { cwd?: string }, output: { env: Record<string, string> }) => {
       output.env.SCAFFOLD_ENGINE_URL = ENGINE_URL
       output.env.SCAFFOLD_PROJECT_DIR = input?.cwd ?? root
+      if (ENGINE_TOKEN) output.env.SCAFFOLD_TOKEN = ENGINE_TOKEN
     },
   }
 }

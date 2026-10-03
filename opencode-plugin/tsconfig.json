@@ -4,8 +4,9 @@
   // the ones the forked CLI actually calls.
   "compilerOptions": {
     "target": "ES2022",
-    // DOM is only for the `HeadersInit` reference inside the vendored plugin types.
-    "lib": ["ES2023", "DOM"],
+    // DOM is only for the `HeadersInit` reference inside the vendored plugin types;
+    // DOM.Iterable because the vendored SDK's generated client calls Headers.entries().
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": ["node"],

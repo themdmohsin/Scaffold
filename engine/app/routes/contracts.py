@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db.models import ApiContract, Event, Project, Task
 from app.db.session import get_db
 from app.services import conflict_service, retrieval
+from app.services.auth import Principal, require_member, require_principal
 from app.services.conflict_recorder import record_conflicts
 
 router = APIRouter(prefix="/projects/{project_id}/contracts", tags=["contracts"])
@@ -46,9 +47,12 @@ def _out(c: ApiContract) -> dict:
 
 
 @router.get("")
-def list_contracts(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list[dict]:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+def list_contracts(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    require_member(db, project_id, principal)
     rows = db.scalars(
         select(ApiContract)
         .where(ApiContract.project_id == project_id)
@@ -59,10 +63,12 @@ def list_contracts(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list
 
 @router.post("", status_code=201)
 def create_contract(
-    project_id: uuid.UUID, body: ContractCreate, db: Session = Depends(get_db)
+    project_id: uuid.UUID,
+    body: ContractCreate,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
 ) -> dict:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+    require_member(db, project_id, principal)
     if body.created_by_task_id:
         task = db.get(Task, body.created_by_task_id)
         if not task or task.project_id != project_id:

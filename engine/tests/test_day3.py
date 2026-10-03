@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["SCAFFOLD_TEAM_LLM_KEY"] = "test-key"
 os.environ["GITHUB_WEBHOOK_SECRET"] = "test-secret"
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -101,6 +103,10 @@ db.commit()
 PID_STR = str(PID)
 db.close()
 
+# Phase 6: every project route needs an authenticated ACTIVE member; the
+# harness acts as a real owner account (the same account 'bootstrap' uses).
+auth.set_role(PID_STR, auth.OWNER_SUB, "owner")
+
 VEC_AUTH = [1.0] + [0.0] * 1535
 VEC_OTHER = [0.0, 1.0] + [0.0] * 1534
 
@@ -131,6 +137,7 @@ finally:
 # ---------------------------------------------------------------------------
 print("\n== /reason endpoint ==")
 client = TestClient(app, raise_server_exceptions=False)
+client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
 
 _FAKE_COMPLETION = types.SimpleNamespace(
     choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=json.dumps({

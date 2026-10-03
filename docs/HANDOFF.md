@@ -1,4 +1,80 @@
 # HANDOFF
+## Current State — 2026-10-03 — Buffy (Phase 6 REAL AUTHENTICATION on branch `day8-bf-real-auth` — NOT yet merged/pushed)
+
+The placeholder identity model is GONE. There is no "acting as" dropdown data path left in the
+engine: every route and every MCP tool requires `Authorization: Bearer`, identity comes only from
+that credential, and the legacy `requesting_user_id` / `user_id` / invite `name` / `granted_by`
+fields are accepted-but-ignored so old clients degrade instead of forging. Two credential kinds:
+Supabase Auth JWTs (humans; HS256 via `SUPABASE_JWT_SECRET`, `aud=authenticated`,
+`iss=<SUPABASE_URL>/auth/v1`, exp+sub required) and `scaffold_…` personal access tokens (plugin/
+CLI/MCP; SHA-256 hash stored, raw shown once, revocable, optional project scope). Accounts mirror
+Supabase `auth.users`; `project_members` carries owner/admin/member roles enforced everywhere;
+`users.account_id` links the frozen roster to the account (human row + its agent rows).
+Unchanged legacy repo table/route names — everything is additive per the freeze rule.
+
+Status codes: 401 no/invalid/revoked credential; 403 valid but not an active member / role too
+low; 503 when `SUPABASE_JWT_SECRET` is unset — the engine fails CLOSED, never trusts. `/mcp` is
+Bearer-gated at the ASGI layer before any tool code runs. Role semantics: member = read + tasks/
+decisions/contracts/agents + MCP reads + granted env values; admin = + member management +
+invite create/list/revoke; owner = + env mutations/grants/rotation + ownership. Exactly one
+active owner per project (services/auth.py `_promote_to_owner`). Invites are now REAL rows
+(single/multi-use, expiry, role, revocable) with an `invite_redemptions` trail — the Day-5 HMAC
+code format is preserved so old links still work (join mints a governed row for a legacy code),
+and join is JWT-only (PATs 403). Supabase RLS (SELECT-only `member_read` policies via a
+SECURITY DEFINER `scaffold_is_active_member`, plus per-account self-read) now covers EVERY
+public table for the anon key + Realtime; the engine keeps the service key and bypasses RLS.
+CORS is configured from `SCAFFOLD_CORS_ORIGINS` (empty = wildcard, dev-only).
+
+New routes (all additive; full shapes in `docs/API_CONTRACTS.md` → "Authentication & authorization"):
+`GET /auth/me` (verified identity + memberships), `POST /auth/tokens` (raw token exactly once),
+`GET /auth/tokens`, `DELETE /auth/tokens/:token_id`, `GET /projects` (my projects + role),
+`GET /projects/:id/invites` (admin; includes redemption trail), `DELETE /projects/:id/invites/:id`.
+`POST /projects` now makes the CALLER the owner (roster row + `owner_user_id`);
+`POST /projects/:id/invite` gained additive `supabase_role`/`max_uses`/`ttl_seconds` knobs.
+
+**New env vars**: `SUPABASE_JWT_SECRET` (engine, REQUIRED — else 503 fail-closed),
+`SCAFFOLD_CORS_ORIGINS` (engine), `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` (engine, DEV/SEED ONLY —
+auto-promotes listed Supabase user ids to owner on projects they touch), `SCAFFOLD_TOKEN`
+(plugin — the PAT sent as Bearer; also injected into shell.env). All in `engine/.env.example` /
+`opencode-plugin/README.md`; the frozen env list in AGENTS.md was extended, nothing renamed.
+
+**Verified on hardware this session** (live Supabase DB): new `python -m tests.test_auth`
+**133/133** — credential primitives, 401 sweep (15 read + 13 write routes), 403 non-member sweep,
+role gates, env grant/revoke with value non-disclosure, member removal takes effect immediately,
+ownership-to-removed-member refused, PAT mint/use/scope/revoke (raw never stored), invite
+lifecycle (cap/expiry/revocation/redemption attribution), cross-project isolation, 503 fail-closed
+then recovery, and live RLS probes as the `anon` role with forged `request.jwt.claims` (member
+sees own project + own account only; outsider sees zero rows; ciphertext schema invisible).
+Full engine sweep green: test_day2 31, test_day3 42, test_day4b 25, test_day5 76, test_phase2 46,
+test_phase3 41, test_phase4 125, test_phase5 91. Migration `migrate_auth.sql` applies 65/65 with
+ZERO skips (the two earlier skips were fixed: `environment_access` policy now scopes through its
+variable, invites publication is exception-wrapped). Plugin: `node tests/verify_plugin.ts`
+**63/63** (every MCP call carries the PAT, incl. after outage recovery), `npm run typecheck`
+**CLEAN** (the PRE-EXISTING vendored-SDK `Headers.entries` error is fixed by adding
+DOM.Iterable to the plugin tsconfig), `python tests/mcp_sdk_interop.py` 17/17,
+`python tests/acceptance_live.py --self-test` 4/4 (the live leg now refuses to run without a
+PAT). `cd dashboard && npm run build` clean (UI intentionally unchanged — separate thread).
+Commits on the branch: 7461702 (auth foundation), 0c67837 (routes + MCP gate), 92c67a6 (tests),
+3aab18e (plugin), plus this docs commit.
+
+What's still broken / not done: the dashboard has NO auth UI yet (next thread — "What the
+dashboard needs" in API_CONTRACTS.md lists exact calls: Supabase sign-in, send the JWT to the
+engine, `GET /auth/me` for memberships/roles, replace the acting-as dropdown with the session);
+`personal_access_tokens.scopes` is reserved and NOT enforced (project pinning is the only extra
+restriction); RLS enforcement probes skip loudly on plain-Postgres rigs (no auth.uid()/anon
+role) where the engine's own require_member checks still hold; the live plugin acceptance run
+(`SCAFFOLD_TOKEN=scaffold_... python tests/acceptance_live.py`) against a running engine was NOT
+executed this session — it needs the engine + Postgres up and a freshly minted PAT;
+`SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` must be EMPTY in any real deployment.
+
+Next person should: set `SUPABASE_JWT_SECRET` in engine/.env (Supabase → Settings → API → JWT
+Secret), start the engine (migration auto-applies), sign in via Supabase Auth to get a JWT or
+mint a PAT with `POST /auth/tokens`, then `SCAFFOLD_TOKEN=scaffold_... python
+opencode-plugin/tests/acceptance_live.py` against the live engine to see the authenticated block
+an agent receives; then build the dashboard auth UI per API_CONTRACTS.md. Do NOT push/merge the
+branch without the owner.
+
+---
 ## Current State — 2026-10-01 — Buffy (Phase 5 Secure Environment & Context COMPLETE on branch `feature/secure-environment`)
 
 The project can now answer "what configuration does this project require?" — and hand the RIGHT

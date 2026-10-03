@@ -25,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "test-secret")
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -123,8 +125,12 @@ else:
     from app.main import app  # noqa: E402
 
     client = TestClient(app, raise_server_exceptions=False)
+    # Phase 6: identity comes from the Bearer token. The creator's token owns the
+    # project until ownership is explicitly transferred to Alice below.
+    client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
     SessionLocal = _init()
     db = SessionLocal()
+    project_auth = auth.ProjectAuth("")
 
     pid = None
     try:
@@ -138,14 +144,39 @@ else:
 
         # members: owner + second developer + an agent (Phase 3 routes)
         code = client.post(f"/projects/{pid}/invite").json()["code"]
-        alice = client.post("/projects/join", json={"code": code, "name": "Alice (P5)", "role": "owner"}).json()["user_id"]
-        bob = client.post("/projects/join", json={"code": code, "name": "Bob (P5)", "role": "backend"}).json()["user_id"]
+        # Each joiner is a distinct ACCOUNT: identity comes from the token, so
+        # the legacy name/role body fields are accepted but ignored.
+        alice_jwt, alice_sub = auth.extra_member("Alice (P5)")
+        bob_jwt, bob_sub = auth.extra_member("Bob (P5)")
+        alice = client.post(
+            "/projects/join",
+            json={"code": code, "name": "Alice (P5)", "role": "owner"},
+            headers=auth.auth_headers(alice_jwt),
+        ).json()["user_id"]
+        bob = client.post(
+            "/projects/join",
+            json={"code": code, "name": "Bob (P5)", "role": "backend"},
+            headers=auth.auth_headers(bob_jwt),
+        ).json()["user_id"]
         agent = client.post(f"/projects/{pid}/agents", json={"name": "Backend Agent (P5)"}).json()["id"]
-        client.post(f"/projects/{pid}/owner", json={"user_id": alice})
+        # PATs speak as the agent row their account registered on this project.
+        project_auth = auth.ProjectAuth(pid)
+        agent_pat, _ = project_auth.pat(name="p5 owner agent")
+        bob_pat, _ = project_auth.pat(name="p5 bob agent", sub=bob_sub)
+        # Ownership transfer: the creator is the owner, so the gate passes, and
+        # from here on the client acts AS THE OWNER (Alice).
+        r = client.post(f"/projects/{pid}/owner", json={"user_id": alice})
+        check("ownership transferred to the joined member", r.status_code == 200 and r.json()["owner_user_id"] == alice, r.text)
+        client.headers.update(auth.auth_headers(alice_jwt))
 
         outside = client.post("/projects", json={"name": f"phase5-outside-{uuid.uuid4().hex[:6]}"}).json()["id"]
         outside_code = client.post(f"/projects/{outside}/invite").json()["code"]
-        mallory = client.post("/projects/join", json={"code": outside_code, "name": "Mallory (other project)"}).json()["user_id"]
+        mallory_jwt, _mallory_sub = auth.extra_member("Mallory (other project)")
+        mallory = client.post(
+            "/projects/join",
+            json={"code": outside_code, "name": "Mallory (other project)"},
+            headers=auth.auth_headers(mallory_jwt),
+        ).json()["user_id"]
 
         # -- define variables (metadata + initial values) ----------------------
         r = client.post(f"/projects/{pid}/environment/variables", json={
@@ -204,10 +235,10 @@ else:
         })
         check("re-grant is idempotent (same grant returned)", r.status_code == 200 and r.json()["id"] == grant_bob_dburl, r.text)
 
-        # non-owner cannot grant
+        # non-owner cannot grant (the token decides, whatever the body claims)
         r = client.post(f"/projects/{pid}/environment/access", json={
-            "environment_variable_id": apiurl_id, "user_id": bob, "granted_by": bob, "requesting_user_id": bob,
-        })
+            "environment_variable_id": apiurl_id, "user_id": bob, "granted_by": alice, "requesting_user_id": alice,
+        }, headers=auth.auth_headers(bob_jwt))
         check("non-owner grant attempt rejected 403", r.status_code == 403, r.text)
         # user of another project cannot be granted
         r = client.post(f"/projects/{pid}/environment/access", json={
@@ -216,30 +247,61 @@ else:
         check("cross-project user cannot be granted 400", r.status_code == 400, r.text)
 
         # -- the request flow: authorization matrix ------------------------------
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": bob})
+        # Each call carries the CALLER's own token; the legacy user_id in the body
+        # is accepted but ignored — that is the whole point of Phase 6.
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("authorized member retrieves value", r.status_code == 200 and r.json()["value"] == SECRET_DATABASE_URL, r.text)
         check("authorized retrieval response carries only key+value", set(r.json()) == {"key", "value"}, str(r.json()))
 
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": agent})
+        # the agent path: a PAT resolves to the caller account's registered agent
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": agent},
+            headers=auth.auth_headers(agent_pat),
+        )
         check("authorized agent retrieves value", r.status_code == 200 and r.json()["value"] == SECRET_DATABASE_URL, r.text)
 
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": alice})
-        check("member WITHOUT grant denied 403", r.status_code == 403, r.text)
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(alice_jwt),
+        )
+        check("member WITHOUT grant denied 403 (body user_id ignored)", r.status_code == 403, r.text)
 
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": mallory})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(mallory_jwt),
+        )
         check("other-project user denied (membership check) 403", r.status_code == 403, r.text)
 
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": str(uuid.uuid4())})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(auth.jwt_for(auth.OUTSIDER_SUB)),
+        )
         check("unknown user denied 403", r.status_code == 403, r.text)
 
         # Grant check precedes the configured check BY DESIGN: a non-granted
         # member must not even learn whether a variable is configured.
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "REQUIRED_SECRET", "user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "REQUIRED_SECRET", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("unconfigured variable WITHOUT grant -> 403 (status not leaked)", r.status_code == 403, r.text)
         client.post(f"/projects/{pid}/environment/access", json={
             "environment_variable_id": req_id, "user_id": bob, "granted_by": alice, "requesting_user_id": alice,
         })
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "REQUIRED_SECRET", "user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "REQUIRED_SECRET", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("unconfigured variable WITH grant -> 404 (defined but not configured)", r.status_code == 404, r.text)
         grants_bob_req = db.scalar(
             sa.select(EnvironmentAccess.id).where(
@@ -250,20 +312,32 @@ else:
         db.delete(db.get(EnvironmentAccess, grants_bob_req))
         db.commit()  # restore the pre-test grant state for the later env-pull assertions
 
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "NO_SUCH_KEY", "user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "NO_SUCH_KEY", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("unknown key -> 404", r.status_code == 404, r.text)
 
         # revoked grant immediately loses access
         r = client.delete(f"/projects/{pid}/environment/access/{grant_bob_dburl}", params={"requesting_user_id": alice})
         check("owner revokes Bob's grant", r.status_code == 200, r.text)
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("revoked member denied immediately 403", r.status_code == 403, r.text)
         client.post(f"/projects/{pid}/environment/access", json={
             "environment_variable_id": dburl_id, "user_id": bob, "granted_by": alice, "requesting_user_id": alice,
         })
 
         # -- env pull: authorized subset only ------------------------------------
-        r = client.post(f"/projects/{pid}/environment/pull", json={"user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/pull",
+            json={"user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         pull = r.json()
         check("env pull 200", r.status_code == 200, r.text)
         pull_keys = {v["key"] for v in pull["values"]}
@@ -275,7 +349,11 @@ else:
         client.post(f"/projects/{pid}/environment/access", json={
             "environment_variable_id": apiurl_id, "user_id": bob, "granted_by": alice, "requesting_user_id": alice,
         })
-        r = client.post(f"/projects/{pid}/environment/pull", json={"user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/pull",
+            json={"user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("env pull widens exactly with grants",
               {v["key"] for v in r.json()["values"]} == {"DATABASE_URL", "API_BASE_URL"}, r.text[:300])
 
@@ -285,14 +363,22 @@ else:
         })
         check("rotate value 200", r.status_code == 200, r.text)
         check("rotation response does NOT echo the value", SECRET_TOKEN not in r.text)
-        r = client.post(f"/projects/{pid}/environment/request", json={"key": "DATABASE_URL", "user_id": bob})
+        r = client.post(
+            f"/projects/{pid}/environment/request",
+            json={"key": "DATABASE_URL", "user_id": bob},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("authorized retrieval returns the ROTATED value", r.json().get("value") == SECRET_TOKEN, r.text)
         by_key2 = {v["key"]: v for v in client.get(f"/projects/{pid}/environment").json()["variables"]}
         check("rotation keeps configured status + metadata", by_key2["DATABASE_URL"]["status"] == "configured")
         r = client.get(f"/projects/{pid}/environment/access", params={"environment_variable_id": dburl_id})
         check("rotation keeps permissions intact", any(g["user_id"] == bob for g in r.json()), r.text)
 
-        r = client.patch(f"/projects/{pid}/environment/variables/{dburl_id}", json={"value": "x", "value_changed": True, "requesting_user_id": bob})
+        r = client.patch(
+            f"/projects/{pid}/environment/variables/{dburl_id}",
+            json={"value": "x", "value_changed": True, "requesting_user_id": alice},
+            headers=auth.auth_headers(bob_jwt),
+        )
         check("non-owner rotation rejected 403", r.status_code == 403, r.text)
 
         # -- template: names only --------------------------------------------------
@@ -361,21 +447,25 @@ else:
         try:
             with httpx.Client() as http:
                 base = "http://127.0.0.1:8907/mcp"
+                # Phase 6: the MCP transport requires a Bearer credential (PAT);
+                # tool identity is the PAT's account, never the tool arguments.
+                auth_header = {"Authorization": f"Bearer {agent_pat}"}
                 res = http.post(base, json={
                     "jsonrpc": "2.0", "id": 1, "method": "initialize",
                     "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                                "clientInfo": {"name": "p5", "version": "0"}},
-                }, headers={"Accept": "application/json, text/event-stream"}, timeout=10)
+                }, headers={"Accept": "application/json, text/event-stream", **auth_header}, timeout=10)
                 sid = res.headers.get("mcp-session-id")
                 http.post(base, json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                           headers={"mcp-session-id": sid} if sid else {}, timeout=10)
 
                 _call_ids = iter(range(100, 100000))
 
-                def call(name, args):
+                def call(name, args, token: str = agent_pat):
                     m = {"jsonrpc": "2.0", "id": next(_call_ids), "method": "tools/call",
                          "params": {"name": name, "arguments": args}}
-                    h = {"Accept": "application/json, text/event-stream"}
+                    h = {"Accept": "application/json, text/event-stream",
+                         "Authorization": f"Bearer {token}"}
                     if sid:
                         h["mcp-session-id"] = sid
                     rr = http.post(base, json=m, headers=h, timeout=15)
@@ -405,11 +495,22 @@ else:
                 check("MCP retrieval leaves NO value in events",
                       all(SECRET_TOKEN not in str(e.payload) and SECRET_DATABASE_URL not in str(e.payload) for e in ev2))
 
-                # a denied agent gets a structured denial, not an error page
-                other_agent = client.post(f"/projects/{pid}/agents", json={"name": "Frontend Agent (P5)"}).json()["id"]
-                d_tool = call("request_environment_value", {"key": "DATABASE_URL", "user_id": other_agent, "project_id": pid})
+                # a denied agent gets a structured denial, not an error page.
+                # Bob's account registers its OWN agent; his PAT speaks as it
+                # (the legacy user_id in the arguments is ignored).
+                other_agent = client.post(
+                    f"/projects/{pid}/agents",
+                    json={"name": "Frontend Agent (P5)"},
+                    headers=auth.auth_headers(bob_jwt),
+                ).json()["id"]
+                d_tool = call(
+                    "request_environment_value",
+                    {"key": "DATABASE_URL", "user_id": agent, "project_id": pid},
+                    token=bob_pat,
+                )
                 check("MCP denial is structured (authorized=false)", d_tool.get("authorized") is False, str(d_tool))
                 check("MCP denial carries NO value", SECRET_TOKEN not in str(d_tool) and SECRET_DATABASE_URL not in str(d_tool))
+                check("the requesting PAT's own agent is the denied identity", other_agent != agent, str(other_agent))
         finally:
             server.should_exit = True
             thread.join(timeout=10)

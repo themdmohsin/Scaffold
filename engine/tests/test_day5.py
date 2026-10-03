@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # the dotenv file). Must be set BEFORE app.config is imported.
 os.environ["GITHUB_WEBHOOK_SECRET"] = "test-secret"
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -193,7 +195,11 @@ code = inv.make_code(pid, now=1_000_000)
 check("code shape: project.expiry.signature", code.count(".") == 2 and code.split(".")[0] == str(pid))
 check("expiry is now + TTL", int(code.split(".")[1]) == 1_000_000 + inv.CODE_TTL_SECONDS)
 parsed = inv.parse_code(code, now=1_000_000 + 60)
-check("round-trip returns the project id", parsed == pid)
+check(
+    "round-trip returns (project id, expiry)",
+    isinstance(parsed, tuple) and parsed[0] == pid and parsed[1] == int(code.split(".")[1]),
+    str(parsed),
+)
 try:
     inv.parse_code(code, now=1_000_000 + inv.CODE_TTL_SECONDS + 1)
     check("expired code rejected", False)
@@ -222,8 +228,8 @@ check(
     "len(roster_block)" in inspect.getsource(reason_mod),
 )
 check(
-    "join dedup is case-insensitive at the SQL level (the DB test cannot run on this machine)",
-    "func.lower" in inspect.getsource(inv),
+    "join binds the VERIFIED principal (body fields cannot pick the identity)",
+    "require_principal" in inspect.getsource(inv) and "principal.via" in inspect.getsource(inv),
 )
 
 print("\n== audit round 4: API hygiene + LLM-prompt trust boundary ==")
@@ -317,6 +323,9 @@ else:
     from app.services import availability  # noqa: E402
 
     client = TestClient(app, raise_server_exceptions=False)
+    # Phase 6: the caller's Bearer token IS the identity. POST /projects makes
+    # the caller the owner, so one owner token covers the calls below.
+    client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
     SessionLocal = _init()
 
     r = client.post("/projects", json={"name": "day5A", "goal": "task assignment", "deadline": DEADLINE.isoformat()})
@@ -327,39 +336,78 @@ else:
     check("invite returns a signed code", r.status_code == 201 and "code" in r.json(), r.text)
     code2 = r.json()["code"]
 
-    r = client.post("/projects/join", json={"code": code2, "name": "Dev B", "role": "frontend"})
+    # Each teammate is a distinct ACCOUNT: the invite binds the CALLER's
+    # verified identity, so the legacy name/role body fields are accepted but
+    # ignored. (Pre-auth this harness passed `name` and got a roster row.)
+    dev_b_jwt, _dev_b_sub = auth.extra_member("Dev B")
+    r = client.post(
+        "/projects/join",
+        json={"code": code2, "name": "Dev B", "role": "frontend"},
+        headers=auth.auth_headers(dev_b_jwt),
+    )
     check("join redeems the code and creates a user", r.status_code == 201 and r.json()["project_id"] == str(pid2), r.text)
     dev_b = r.json()["user_id"]
+    check("joined roster name comes from the account", r.json()["name"] == "Dev B", r.text)
 
-    r = client.post("/projects/join", json={"code": code2, "name": "Dev C"})
+    dev_c_jwt, _dev_c_sub = auth.extra_member("Dev C")
+    r = client.post("/projects/join", json={"code": code2, "name": "Dev C"}, headers=auth.auth_headers(dev_c_jwt))
     check("second teammate joins with the same link", r.status_code == 201)
-    r = client.post("/projects/join", json={"code": "0.0.bad", "name": "Nope"})
+    r = client.post("/projects/join", json={"code": "0.0.bad", "name": "Nope"}, headers=auth.auth_headers(dev_c_jwt))
     check("bad code cannot join", r.status_code == 400)
 
     # A code signed for a project that does not exist: signature and expiry are
     # both valid (make_code stamps expiry off the wall clock, 7-day TTL), so the
     # 404 comes from the missing project row — the case this pins.
-    r = client.post("/projects/join", json={"code": inv.make_code(uuid.uuid4()), "name": "Ghost"})
+    r = client.post(
+        "/projects/join",
+        json={"code": inv.make_code(uuid.uuid4()), "name": "Ghost"},
+        headers=auth.auth_headers(dev_c_jwt),
+    )
     check("valid code for a nonexistent project 404s", r.status_code == 404, r.text)
 
-    # Idempotency: one shared link redeemed again returns the SAME user at 200.
-    r = client.post("/projects/join", json={"code": code2, "name": "Dev B", "role": "frontend"})
+    # Unauthenticated redemption is refused outright (requirement: identity
+    # comes only from a verified token). Fresh client: no default bearer header.
+    anon = TestClient(app, raise_server_exceptions=False)
+    r = anon.post("/projects/join", json={"code": code2, "name": "Anonymous"})
+    check("joining without a token is 401", r.status_code == 401, r.text)
+    check("a protected read without a token is 401", anon.get(f"/projects/{pid2}/tasks").status_code == 401)
+
+    # Idempotency: the SAME token redeeming the same link returns the same user.
+    r = client.post(
+        "/projects/join",
+        json={"code": code2, "name": "Dev B", "role": "frontend"},
+        headers=auth.auth_headers(dev_b_jwt),
+    )
     check(
-        "re-joining with the same name is idempotent (no duplicate users row)",
+        "re-joining with the same token is idempotent (no duplicate users row)",
         r.status_code == 200 and r.json().get("existing") is True and r.json()["user_id"] == dev_b,
         r.text,
     )
-    r = client.post("/projects/join", json={"code": code2, "name": "dev b"})
-    check("name match is case-insensitive", r.status_code == 200 and r.json()["user_id"] == dev_b, r.text)
-    r = client.post("/projects/join", json={"code": code2, "name": "   "})
-    check("whitespace-only name rejected", r.status_code in (400, 422), r.text)
+    # A DIFFERENT account cannot impersonate Dev B via the legacy name field:
+    # it joins as itself (its own account-derived roster name).
+    imposter_jwt, _imposter_sub = auth.extra_member("Impostor")
+    r = client.post(
+        "/projects/join",
+        json={"code": code2, "name": "Dev B"},
+        headers=auth.auth_headers(imposter_jwt),
+    )
+    check(
+        "legacy body name cannot impersonate another member",
+        r.status_code == 201 and r.json()["user_id"] != dev_b and r.json()["name"] == "Impostor",
+        r.text,
+    )
 
     db = SessionLocal()
     try:
         rows = availability.roster(db, pid2)
-        check("roster sees both joined users at zero load", {r_["name"] for r_ in rows} == {"Dev B", "Dev C"}, str(rows))
+        names_list = [r_["name"] for r_ in rows]
+        check(
+            "roster sees the creator + every joined teammate at zero load",
+            {"Dev B", "Dev C", "Impostor"} <= set(names_list) and len(rows) == 4,
+            str(rows),
+        )
         n_users = db.execute(sa.text("SELECT count(*) FROM users WHERE project_id = :p"), {"p": pid2}).scalar()
-        check("idempotent re-joins planted no duplicate users rows", n_users == 2, str(n_users))
+        check("idempotent re-joins planted no duplicate users rows", n_users == 4 and names_list.count("Dev B") == 1, str(names_list))
         db.execute(
             __import__("sqlalchemy").text(
                 "INSERT INTO tasks (id, project_id, title, status, owner_id) VALUES (:i, :p, 't', 'in_progress', :o)"
@@ -377,7 +425,7 @@ else:
             ),
             {"p": pid2},
         ).scalar()
-        check("teammate_joined events logged", ev == 2)
+        check("teammate_joined events logged once per joiner", ev == 3, str(ev))
 
         # Day 5 round 5: GET /context must SURFACE the conflict moment — the
         # demo doc promises "GET /context -> blockers", but the additive keys

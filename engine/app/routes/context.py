@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Blocker, Event, Project, Task
 from app.db.session import get_db
 from app.services import retrieval
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(tags=["context"])
 
@@ -150,5 +151,10 @@ def build_context(db: Session, project_id: uuid.UUID) -> dict:
 
 
 @router.get("/projects/{project_id}/context")
-def get_context(project_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def get_context(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_member(db, project_id, principal)
     return build_context(db, project_id)

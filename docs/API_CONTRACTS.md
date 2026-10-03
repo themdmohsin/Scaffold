@@ -128,6 +128,72 @@ GitHub push/PR receiver. Signature-verified with `GITHUB_WEBHOOK_SECRET` (HMAC-S
 ```
 The ONLY route that calls an LLM for a user-facing answer (via LiteLLM, `SCAFFOLD_TEAM_LLM_KEY`, in `services/reasoning.py` only). *(Route frozen Day 1; implemented Day 3.)*
 
+## Authentication & authorization (Phase 6 — additive)
+
+Every route and every MCP tool requires `Authorization: Bearer <credential>` — with exactly two exceptions: `GET /health` (liveness, no auth, no DB) and `POST /projects/:id/github-webhook` (authenticated by GitHub's HMAC-SHA256 signature; GitHub cannot carry a user credential, and a missing/bad signature is 403). Two credential kinds are accepted:
+
+- **Supabase Auth JWT** (humans; `aud="authenticated"`, `iss=<SUPABASE_URL>/auth/v1`, requires `exp` + `sub`) — verified with `SUPABASE_JWT_SECRET`. The account is find-or-created in `accounts` from the token's `sub`; email/full_name come from the token claims. Configure email+password and GitHub OAuth in Supabase Auth. **The dashboard UI thread is separate; the API it needs is listed at the end of this section.**
+- **Personal access token** (machines: OpenCode plugin / CLI / MCP) — `scaffold_` + 32 random bytes, SHA-256-hashed in `personal_access_tokens` (raw shown once, revocable, never stored), optionally scoped to ONE project.
+
+Identity is NEVER read from a body or query. Legacy fields (`requesting_user_id`, `user_id`, the `name` on join, `granted_by`) are accepted-but-ignored where the old routes used them, so old clients don't hard-fail — they cannot change WHO the caller is.
+
+Status codes: **401** no/invalid/revoked credential; **403** valid credential but not an active member of that project (or role too low); **503** `SUPABASE_JWT_SECRET` unset — the engine fails CLOSED rather than trusting anything.
+
+Roles (`project_members.supabase_role`): `member` = read + tasks/decisions/contracts/agents + MCP reads + granted env values; `admin` = + member management + invite create/list/revoke; `owner` = + env variable/access mutations, ownership transfer. Exactly one active owner per project (enforced in `services/auth.py`).
+
+### `GET /auth/me` *(Phase 6)*
+`200` — the VERIFIED identity + memberships (the first call a dashboard makes after login):
+```jsonc
+{ "account_id": "...", "via": "jwt" | "pat", "email": "...", "full_name": "...",
+  "auth_provider": "email" | "github", "token_scoped_project_id": null,
+  "memberships": [ { "project_id": "...", "supabase_role": "owner", "joined_at": "..." } ] }
+```
+
+### `POST /auth/tokens` *(Phase 6)*
+Mint a PAT for the CALLER. JWTs only — a PAT cannot mint further tokens (403).
+```jsonc
+// request
+{ "name": "laptop", "project_id": "optional uuid — pin the token to ONE project", "scopes": [] }
+// response 201 — THE ONLY RESPONSE THAT EVER CONTAINS THE RAW TOKEN
+{ "id": "...", "token": "scaffold_...", "name": "laptop", "token_prefix": "scaffold_abc12…",
+  "project_id": null, "created_at": "...",
+  "warning": "Store this token now — it is shown once and cannot be recovered." }
+```
+
+### `GET /auth/tokens` *(Phase 6)*
+`200 [ { id, name, token_prefix, project_id, created_at, last_used_at, revoked_at } ]` — the caller's own tokens, metadata only (no token material can ever appear here).
+
+### `DELETE /auth/tokens/:token_id` *(Phase 6)*
+`200 { "revoked": true, "id": "..." }` (+ `"already_revoked": true` on a re-revoke). Own tokens only; anyone else's id 404s. Revocation takes effect on the NEXT request (no cached access).
+
+### `GET /projects` *(Phase 6)*
+`200 { "projects": [ { "id", "name", "goal", "deadline", "created_at", "supabase_role", "joined_at" } ] }` — projects where the caller is an ACTIVE member, oldest first.
+
+### `POST /projects` (changed Phase 6)
+Same request body as Day 1 plus optional `requesting_user_id` (accepted, ignored). The CALLER becomes the project's owner: an owner `project_members` row, a roster `users` row, and `projects.owner_user_id` are created. `409` duplicate name, `401`/`503` per above.
+
+### `POST /projects/join` (changed Phase 6)
+Requires a JWT (`via="jwt"` — PATs get 403 "joining requires a signed-in Supabase session"). The `code` selects the PROJECT; the token selects the IDENTITY. Body `name`/`role` are accepted-but-ignored. `201` new join / `200` idempotent re-join (`"existing": true`); new joins add `supabase_role`. Invite checks: exact-row lookup (a revoked code can never be bypassed by minting a fresh one), revoked → 403, expired → 400, uses exhausted → 403. Each redemption writes an `invite_redemptions` row and increments `use_count`.
+
+### Invite governance (Phase 6 — additive on the Day-5 invite/join pair)
+- `POST /projects/:id/invite` — admin-gated; row-backed (reuses the newest live default invite, else creates one). Additive body knobs: `supabase_role` (default `member`), `max_uses`, `ttl_seconds`; response adds `invite_id`, `supabase_role`, `max_uses`, `use_count`, `revoked` to the Day-5 shape. Old `project_id.expiry.sig` links keep working: join mints a governed row for a legacy code on first post-auth use.
+- `GET /projects/:id/invites` — admin-gated; every invite with `redemptions: [{ account_id, email, name, redeemed_at }]` ("who joined").
+- `DELETE /projects/:id/invites/:invite_id` — admin-gated; soft-revoke (`revoked_at`).
+- `POST /projects/:id/agents` — agents attach to the CALLER's account (`users.account_id`); a PAT request that registered an agent resolves AS that agent (own recommendations, own env grants).
+
+### MCP (`/mcp`)
+`Authorization: Bearer` is required on EVERY request, `initialize` included; unauthenticated requests get 401 before any tool code runs (ASGI gate in `app/main.py`). JWTs and PATs are both accepted; tool names/signatures and response shapes are unchanged.
+
+### CORS
+Allowed browser origins come from `SCAFFOLD_CORS_ORIGINS` (comma-separated). Empty = wildcard (local dev only). With explicit origins, credentials are allowed. Set it in any shared deployment.
+
+### What the dashboard needs (API side — the UI is a separate thread)
+1. Sign in with Supabase Auth (email/password + GitHub OAuth); send the session JWT as `Authorization: Bearer` to the engine on every call.
+2. Use the Supabase anon key ONLY for Realtime/PostgREST reads — RLS scopes them to active members (`docs/SCHEMA.md` Phase 6).
+3. After login: `GET /auth/me` → memberships + `supabase_role` drive which actions render.
+4. Project picker: `GET /projects`; create: `POST /projects`; Team panel: `GET /projects/:id/members` + `GET /projects/:id/invites` (admin+).
+5. Remove the "acting as" dropdown: identity is the session. `requesting_user_id`/`user_id` params are ignored by the engine now; token management is `GET/POST /auth/tokens` + `DELETE /auth/tokens/:id`.
+
 ## Team collaboration routes (Day 5 + Phase 3 — additive, not in the Day 1 freeze list)
 
 ### `POST /projects/:id/invite` *(Day 5)*
@@ -185,6 +251,8 @@ Bootstraps ownership (open, first call — no owner yet) or transfers it (`reque
 Task assignment to a member or an agent reuses the existing, frozen `tasks.owner_id` field and `PATCH /projects/:id/tasks/:task_id` route unchanged — there is no second task/assignment system; `kind` on the assigned `users` row is how the dashboard tells a developer from an agent.
 
 Authorization note: this repo has no authentication system. `requesting_user_id` is a placeholder authorization hook (compared server-side to `projects.owner_user_id`), not a verified identity — every other route in this API has the same trust model today. It becomes a real session identity once auth (e.g. Supabase Auth) is wired in.
+
+> **Phase 6 note (2026-10-03):** this placeholder model is now SUPERSEDED — see "Authentication & authorization" above. Every route here requires `Authorization: Bearer`; `requesting_user_id` is accepted-but-ignored; `PATCH/DELETE /members` are admin-gated and `POST /owner` is owner-gated with a removed-member guard. The paragraph above is kept as the historical Day-5..Phase-3 contract.
 
 ## Intelligent coordination routes (Phase 4 — additive)
 
@@ -364,7 +432,7 @@ Frozen-contract guarantees: `GET /projects/:id/context` gains NOTHING env-relate
 all Phase 1-4 routes are untouched.
 
 ## MCP server (Day 2 — LIVE at `/mcp`, streamable HTTP)
-The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention.
+The OpenCode plugin calls these verbatim — do not rename. All tools hit real Postgres; deterministic logic only (repo rule #3). Every tool takes an optional `project_id`; when omitted the server uses `SCAFFOLD_DEFAULT_PROJECT_ID` (engine .env) — the single-project demo convention. **Phase 6: every request requires `Authorization: Bearer <JWT or PAT>` and the caller must be an active member of the target project; the resolved identity is used for agent recommendations, agent registration, and env grants.**
 ```
 get_project_context(project_id?)                                    → context object (same shape as GET /context)
 get_api_contract(route: str, project_id?)                           → { found, method, request_schema, response_schema } | { found: false }
@@ -388,6 +456,12 @@ DATABASE_URL=                   # Day 1 addition — Postgres pooler connection 
 SCAFFOLD_SECRET_KEYRING=        # Phase 5 OPTIONAL — name of the active scaffold_secrets.keyring row;
                                 # unset = newest row (`default`). The KEY ITSELF is generated inside
                                 # Postgres and never lives in an env file.
+SUPABASE_JWT_SECRET=            # Phase 6 REQUIRED — Supabase Dashboard → Settings → API → JWT Secret.
+                                # Verifies Supabase Auth JWTs; unset = every authenticated route 503 (fail closed).
+SCAFFOLD_CORS_ORIGINS=          # Phase 6 — comma-separated allowed browser origins (e.g. http://localhost:5173).
+                                # Empty = wildcard (DEV ONLY); set explicitly in any shared deployment.
+SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS= # Phase 6 DEV/SEED ONLY — comma-separated Supabase user ids auto-promoted
+                                # to OWNER on any project they touch (pre-auth project bootstrap). Leave EMPTY in prod.
 
 # dashboard/.env
 VITE_SUPABASE_URL=
@@ -396,6 +470,8 @@ VITE_ENGINE_URL=
 
 # opencode-plugin/.env (Day 1 addition — new component)
 SCAFFOLD_ENGINE_URL=            # where the plugin's hooks reach the engine
+SCAFFOLD_TOKEN=                 # Phase 6 — personal access token (`scaffold_…` from POST /auth/tokens).
+                                # Sent as Authorization: Bearer on every MCP call; required by the engine.
 ```
 
 ## OpenCode plugin hook API (verified 2026-09-23 against opencode.ai/docs/plugins)
@@ -419,6 +495,7 @@ Plugins can also register custom tools via `tool({...})` with Zod-style schemas 
 
 ## Changelog (append-only after Day 1)
 
+- 2026-10-03 — Phase 6 (real authentication, `day8-bf-real-auth`): the placeholder identity model is replaced. Every route + MCP tool now requires `Authorization: Bearer` (exceptions: `GET /health`, and the GitHub webhook, which authenticates via GitHub's HMAC signature) — a Supabase Auth JWT (humans) or a `scaffold_…` personal access token (plugin/CLI/MCP, SHA-256-hashed in `personal_access_tokens`, shown once, revocable, optionally project-scoped). Identity is resolved server-side and never from a body; the legacy `requesting_user_id`/`user_id`/`name`-on-join/`granted_by` fields are accepted-but-ignored everywhere they existed. New routes (full shapes in the new "Authentication & authorization" section): `GET /auth/me`, `POST /auth/tokens` (raw token exactly once), `GET /auth/tokens`, `DELETE /auth/tokens/:token_id`, `GET /projects` (my projects). `POST /projects` now makes the CALLER the owner; `POST /projects/join` requires a JWT (`via="jwt"`; PATs 403) and binds the VERIFIED principal; `POST /projects/:id/invite` is now row-backed and admin-gated (additive knobs `supabase_role`/`max_uses`/`ttl_seconds`; Day-5 response keys preserved) with new admin-gated `GET /projects/:id/invites` (incl. per-invite redemption trail) and `DELETE /projects/:id/invites/:invite_id`. Role model: member < admin < owner (`project_members.supabase_role`), enforced on routes AND MCP; unauthenticated → 401, non-member → 403, missing `SUPABASE_JWT_SECRET` → 503 fail-closed. `/mcp` is Bearer-gated at the ASGI layer (401 before tool code). Supabase RLS (SELECT-only, active members) covers every public table for the anon key + Realtime; engine uses the service key. CORS is now `SCAFFOLD_CORS_ORIGINS`. New env vars: `SUPABASE_JWT_SECRET`, `SCAFFOLD_CORS_ORIGINS`, `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` (engine, DEV/SEED only), `SCAFFOLD_TOKEN` (plugin). New tables/columns/RLS: `docs/SCHEMA.md` Phase 6. Verified: new `engine/tests/test_auth.py` 133/133 (credential primitives, 401/403 sweeps, role gates, PAT lifecycle, invite lifecycle, cross-project isolation, secret non-disclosure, live RLS enforcement as the `anon` role); full engine sweep green — test_day2 31, test_day3 42, test_day4b 25, test_day5 76, test_phase2 46, test_phase3 41, test_phase4 125, test_phase5 91; plugin: verify_plugin.ts 63/63 (every MCP call carries the PAT), typecheck clean, mcp_sdk_interop 17/17, acceptance_live --self-test 4/4 (live leg now refuses to run without `SCAFFOLD_TOKEN`).
 - 2026-10-01 — Phase 5 (secure environment & context, `feature/secure-environment`): the SECURE-CONFIGURATION layer on top of COORDINATE. New additive routes (full shapes in the new "Secure environment routes" section): `GET /projects/:id/environment` (status + summary, value-free by construction), `POST/PATCH/DELETE /projects/:id/environment/variables[/:variable_id]` (metadata + set/rotate value), `POST/GET/DELETE /projects/:id/environment/access[/:grant_id]` (per-variable grants), `POST /projects/:id/environment/request` (the agent/developer secret request — the only single-value carrier, after membership + grant checks, with audit events), `POST /projects/:id/environment/pull` (granted-only `.env.scaffold` generation — the `scaffold env pull` transport), `GET /projects/:id/environment/template` (`.env.example` KEY= lines, never values), `GET /projects/:id/environment/audit` (value-free access trail). `GET /projects/:id/context` intentionally gains NO env keys — secrets can never enter embeddings, prompts, or `get_project_context()`. Three additive MCP tools: `get_project_environment`, `get_environment_template`, `request_environment_value` (authorized-only value; structured denial). New event types (all value-free): `env_variable_defined`, `env_value_set`, `env_access_granted`, `env_access_revoked`, `env_secret_requested`, `env_secret_access_denied`, `env_secret_retrieved`, `env_secret_rotated`, `env_variable_removed`, `env_variable_updated`. New tables + `scaffold_secrets` schema: see `docs/SCHEMA.md`. One new OPTIONAL env var: `SCAFFOLD_SECRET_KEYRING` (engine — pins the active keyring row name; the key material itself is generated inside Postgres, never in an env file). Plugin UNCHANGED by design — values flow MCP → agent runtime directly, never through the plugin or the dashboard. Verified: `python -m tests.test_phase5` 89/89 (pure units + DB-backed route legs incl. the non-disclosure sweeps over events/context/tasks/members/MCP and MCP over the real wire); full regression green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40, test_phase4 125 (373 passed, 0 failed); `dashboard && npm run build` clean. Dashboard: new Environment panel (`components/Environment.tsx`) — configuration status (Configured / Required · Missing / Optional · Not configured), define/rotate/remove, grant/revoke per variable, template viewer; acting-as selector; there is NO code path that displays a stored value.
 - 2026-09-30 — Phase 4 (intelligent coordination, `feature/intelligent-coordination`): the COORDINATE layer learns to answer "what should I work on?" and "what should happen next?" — deterministically first, AI only to explain. NO schema changes (pure computation over the existing tables; no migration file, nothing new stored — recommendation decisions are recorded as events only). New routes (all additive, see the "Intelligent coordination routes" section): `GET /projects/:id/tasks/ready`, `GET /projects/:id/recommendations`, `GET /projects/:id/recommendations/next`, `POST /projects/:id/recommendations/next` (project-level next action), `GET /projects/:id/coordination` (dashboard panel payload), and the human-override pair `POST /projects/:id/tasks/:task_id/accept-recommendation` / `POST .../reject-recommendation`. New `engine/app/services/coordination.py` (pure deterministic state classification READY/BLOCKED/WAITING_ON_DEPENDENCY/IN_PROGRESS/REVIEW/DONE, explainable scoring — priority/assignment/downstream-impact/deadline/age, every factor echoed as reasons — recommendation pipeline, project next action, overlap detection, cross-owner dependency awareness) + `coordination_data.py` (bounded plain-row loaders). Task states of record remain the existing `tasks.status`/`blocked`/`task_dependencies`/`blockers` columns; nothing is duplicated. Two additive MCP tools: `get_ready_tasks`, `get_recommended_task` (frozen six untouched). Two new event types: `recommendation_accepted`, `recommendation_rejected` (the only persistence — the human decision trail). LLM usage: one new fail-open helper `reasoning.explain_recommendation` (phrases already-decided facts into one sentence; only called with `explain=true`; reasoning.py remains the only LLM file). Human override: accept claims the task via the frozen `tasks.owner_id` assignment path (never automatic); reject suppresses the task for that member for 7 days (window constant in coordination.py). No new env vars. Verified: `python -m tests.test_phase4` 125/125 (pure units + DB-backed route legs incl. MCP over the wire); full regression re-run green — test_day2 31, test_day3 35, test_day4b 25, test_day5 74, test_phase2 43, test_phase3 40 (248 passed, 0 failed); `dashboard && npm run build` clean. Dashboard: new Next Actions panel (`components/NextActions.tsx`) — recommended next step with Accept/Not-now override, READY TO START / BLOCKED / NEEDS REVIEW / CONFLICTS columns (incl. "Potential overlap detected" rows), who-is-doing-what footer; loads via one deterministic GET (no LLM on dashboard load), degrades silently against older engines.
 - 2026-09-30 — Phase 3 (team collaboration, `feature/team-collaboration`): new additive routes `GET /projects/:id/members`, `PATCH /projects/:id/members/:member_id`, `DELETE /projects/:id/members/:member_id`, `POST /projects/:id/agents`, `POST /projects/:id/owner` — full shapes in the new "Team collaboration routes" section above. AI agents are first-class `users` rows (`kind='agent'`, free-text `agent_provider`/`agent_model` — no vendor hardcoded). Task assignment reuses the existing frozen `tasks.owner_id` + `PATCH /projects/:id/tasks/:task_id` — no second task/assignment system. Activity status (`ACTIVE`/`IDLE`/`BLOCKED`/`OFFLINE`) is computed deterministically in `engine/app/services/team.py` from existing tasks/decisions/events — never an LLM call, never faked live presence. `GET /projects/:id/context` gains one ADDITIVE key on `project`: `owner_user_id` (null until `POST /owner` is called). Owner-gated mutations use a placeholder `requesting_user_id` field compared to `projects.owner_user_id` — not real auth (none exists yet anywhere in this API); becomes a real session identity once auth is wired in. No changes to Day 5 invite/join (still stateless HMAC codes, no invites table). New indexes + `users` columns (`kind`, `agent_provider`, `agent_model`, `agent_session_id`, `membership_status`, `joined_at`) and `projects.owner_user_id` — see `docs/SCHEMA.md`. No new env vars. Verified: `python -m tests.test_phase3` 40/40 (offline pure units + DB-backed route legs); full regression re-run clean — `test_day2` 31/31, `test_day3` 35/35, `test_day4b` 25/25, `test_day5` 74/74 (205 total, 0 failed); `dashboard && npm run build` clean (tsc + vite). New dashboard Team panel (`components/Team.tsx`) is additive/isolated — roster table, invite/join/agent-registration mini-forms, owner/role/remove actions; `App.tsx` gained one new fetch (`fetchMembers`, degrades to an empty roster against older engines) and one new panel mount.

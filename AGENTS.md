@@ -22,7 +22,8 @@ docs/               SCHEMA.md, API_CONTRACTS.md, HANDOFF.md
 
 ## Frozen contracts — use these exact names, never invent your own
 
-**Database tables** (Postgres/Supabase): `projects, users, tasks, task_dependencies, decisions, decision_affects_tasks, api_contracts, commits, blockers, events`. Full column definitions in `docs/SCHEMA.md` — read it before writing any query or model.
+**Database tables** (Postgres/Supabase): `projects, users, tasks, task_dependencies, decisions, decision_affects_tasks, api_contracts, commits, blockers, events`.
+Phase 6 additions: `accounts, project_members, personal_access_tokens, invites, invite_redemptions` (+ `users.account_id`). Full column definitions in `docs/SCHEMA.md` — read it before writing any query or model.
 
 **API routes** (`engine/`):
 ```
@@ -45,6 +46,18 @@ POST  /projects/:id/tasks/:task_id/accept-recommendation
 POST  /projects/:id/tasks/:task_id/reject-recommendation
 ```
 
+**Phase 6 auth additions** (real authentication — see `docs/API_CONTRACTS.md` "Authentication & authorization"):
+```
+GET    /auth/me
+POST   /auth/tokens
+GET    /auth/tokens
+DELETE /auth/tokens/:token_id
+GET    /projects
+GET    /projects/:id/invites
+DELETE /projects/:id/invites/:invite_id
+```
+`POST /projects` now creates the project owned by the caller; `POST /projects/join` and `POST /projects/:id/invite` stay as-frozen but are JWT/admin-gated. **Every route and MCP tool requires `Authorization: Bearer <Supabase JWT or scaffold_… PAT>`; identity is never read from a body/query** (legacy `requesting_user_id`/`user_id` fields are accepted-but-ignored). Exceptions: `GET /health` (liveness) and `POST /projects/:id/github-webhook` (GitHub HMAC signature — GitHub cannot carry a user credential). 401 unauthenticated, 403 non-member/role too low, 503 when `SUPABASE_JWT_SECRET` is unset (fail closed).
+
 **MCP tool names** (`engine/app/mcp_server.py`) — the OpenCode plugin calls these verbatim, do not rename:
 ```
 get_project_context()
@@ -60,9 +73,12 @@ get_recommended_task(user_id: str | None)
 **Env vars** — use exactly these names, add new ones to `.env.example` in the same commit if you introduce one:
 ```
 SUPABASE_URL, SUPABASE_SERVICE_KEY, SCAFFOLD_TEAM_LLM_KEY,
-GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN
+GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN,
+SUPABASE_JWT_SECRET, SCAFFOLD_CORS_ORIGINS, SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS
 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_ENGINE_URL
+SCAFFOLD_ENGINE_URL, SCAFFOLD_TOKEN
 ```
+(`SUPABASE_JWT_SECRET` verifies Supabase Auth JWTs — required, else 503 fail-closed. `SCAFFOLD_CORS_ORIGINS` = comma-separated browser origins, empty = wildcard dev-only. `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` = DEV/SEED only, auto-promotes listed Supabase user ids to owner. `SCAFFOLD_TOKEN` = the plugin's PAT, sent as `Authorization: Bearer` on every MCP call.)
 
 ## Tech stack — do not substitute without asking a human
 
@@ -114,8 +130,13 @@ bun run --cwd packages/opencode src/index.ts --version   # -> local
 # engine verification harnesses (require engine/.env with DATABASE_URL + schema applied)
 cd engine && python -m tests.test_day2   # diff parser, signed webhook, all 6 MCP tools
 cd engine && python -m tests.test_day3   # retrieval, /reason, context enrichment
+cd engine && python -m tests.test_day4b  # conflict detection + auto-issue
+cd engine && python -m tests.test_day5   # assignment, invites/join, context additions
+cd engine && python -m tests.test_phase2 # task board: deps, blockers, activity feed
+cd engine && python -m tests.test_phase3 # team: roster, agents, ownership
 cd engine && python -m tests.test_phase4 # ready tasks, recommendations, next action, overrides
 cd engine && python -m tests.test_phase5 # secure environment: metadata, grants, secret store, non-disclosure
+cd engine && python -m tests.test_auth   # Phase 6: JWT/PAT credentials, 401/403/role gates, invites, RLS
 
 # plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
 cd opencode-plugin && npm install && npm run typecheck
@@ -125,6 +146,7 @@ cd opencode-plugin && node tests/verify_plugin.ts
 cd opencode-plugin && python tests/mcp_sdk_interop.py        # vs the real mcp SDK (engine/.venv)
 cd opencode-plugin && python tests/acceptance_live.py --self-test
 # plugin acceptance against a LIVE engine (needs engine/.env + Postgres up; no LLM key)
-cd opencode-plugin && python tests/acceptance_live.py
+# SCAFFOLD_TOKEN (a PAT from POST /auth/tokens) is REQUIRED — /mcp is Bearer-gated
+cd opencode-plugin && SCAFFOLD_TOKEN=scaffold_... python tests/acceptance_live.py
 ```
 (There is no pytest suite: the engine harnesses are script-style modules that print PASS/FAIL and exit non-zero on failure. The dashboard is checked via `npm run build`. Keep this section current when harnesses move.)
