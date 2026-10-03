@@ -11,6 +11,11 @@ prints the exact block the agent would receive, which is the artifact to paste i
 Requires a live engine whose .env has DATABASE_URL + SCAFFOLD_DEFAULT_PROJECT_ID
 (engine/README steps: pip install -r requirements.txt, apply schema, seed, uvicorn app.main:app).
 
+The live engine authenticates every MCP call with a personal access token
+(Authorization: Bearer). Mint one with POST /auth/tokens and export it first:
+
+    SCAFFOLD_TOKEN=scaffold_... python opencode-plugin/tests/acceptance_live.py
+
     SCAFFOLD_ACCEPTANCE_REPORT=1 python opencode-plugin/tests/acceptance_live.py
 also exercises report_change — that WRITES a `change_reported` event to the real project.
 """
@@ -58,6 +63,14 @@ if args.self_test:
         run(engine.url, "self-test (fixture engine)")
         check("self-test: the fixture actually injected a block", len(engine.calls) > 0, str(engine.calls))
 else:
+    if not os.environ.get("SCAFFOLD_TOKEN"):
+        print(
+            "\nThe live engine requires a personal access token on every MCP call.\n"
+            "Mint one with POST /auth/tokens (response shows the raw token once), then:\n"
+            "    SCAFFOLD_TOKEN=scaffold_... python opencode-plugin/tests/acceptance_live.py\n"
+        )
+        check("live run supplies SCAFFOLD_TOKEN", False, "missing PAT")
+        sys.exit(report())
     run(args.url, "live engine")
     print(
         "\nEvidence for docs/HANDOFF.md: paste the injected block above.\n"

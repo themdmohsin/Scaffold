@@ -95,5 +95,7 @@ check("no source text appears in plugin logs", !JSON.stringify(logs).includes(SO
 check("no warnings while the engine is healthy", logs.every((l) => l.level !== "warn"), JSON.stringify(logs.filter((l) => l.level === "warn")))
 
 console.log(`__RESULT__${JSON.stringify({ checks, logged: logs.length, toasts: toasts.length })}`)
-// Undici keeps sockets alive; the runner needs a clean exit.
-process.exit(checks.every((c) => c.ok) ? 0 : 1)
+// Exit via exitCode, not process.exit(): forcing an exit while undici's keep-alive
+// sockets are open crash-fails Node 24 on Windows (0xC0000409). The loop drains
+// once the sockets time out, with the right status either way.
+process.exitCode = checks.every((c) => c.ok) ? 0 : 1

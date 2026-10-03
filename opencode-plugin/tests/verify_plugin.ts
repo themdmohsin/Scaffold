@@ -71,7 +71,7 @@ const FIXTURE_CONTRACTS: Record<string, any> = {
   },
 }
 
-type Recorded = { method: string; tool?: string; args?: any; sessionHeader?: string | undefined }
+type Recorded = { method: string; tool?: string; args?: any; sessionHeader?: string | undefined; authHeader?: string | undefined }
 
 /** Controllable fake engine: `mode` toggles SSE replies and hanging calls mid-test. */
 const engine = {
@@ -103,6 +103,7 @@ const server = http.createServer((req, res) => {
         tool: message.params?.name,
         args: message.params?.arguments,
         sessionHeader,
+        authHeader: req.headers["authorization"] as string | undefined,
       })
     }
 
@@ -180,6 +181,8 @@ const port: number = await new Promise((resolve) => {
   server.listen(0, "127.0.0.1", () => resolve((server.address() as any).port))
 })
 process.env.SCAFFOLD_ENGINE_URL = `http://127.0.0.1:${port}`
+const VERIFY_TOKEN = "scaffold_verify_pat_0123456789abcdefghijklmn"
+process.env.SCAFFOLD_TOKEN = VERIFY_TOKEN
 
 const { ScaffoldPlugin } = await import(new URL("../.opencode/plugins/scaffold.ts", import.meta.url).href)
 
@@ -421,6 +424,7 @@ check(
   "shell.env still injects the frozen var",
   env.env.SCAFFOLD_ENGINE_URL === `http://127.0.0.1:${port}` && env.env.SCAFFOLD_PROJECT_DIR === `${WORKTREE}/engine`,
 )
+check("shell.env injects the PAT so spawned CLIs authenticate", env.env.SCAFFOLD_TOKEN === VERIFY_TOKEN)
 
 console.log("\n== failure modes (hooks must fail open) ==")
 engine.mode.hang = "get_api_contract"
@@ -520,6 +524,7 @@ const outageHandler: http.RequestListener = (req, res) => {
       tool: message.params?.name,
       args: message.params?.arguments,
       sessionHeader,
+      authHeader: req.headers["authorization"] as string | undefined,
     })
     if (message.params?.name === "report_change") {
       // Until recovery, the engine is up but cannot accept writes: a per-call error
@@ -592,6 +597,24 @@ check(
 check(
   "the context warms again on the new session after the outage",
   callsTo("get_project_context").length >= 1 && engineBackUp,
+)
+
+console.log("\n== auth: the PAT rides every MCP call ==")
+const expectedAuth = `Bearer ${VERIFY_TOKEN}`
+const unauthenticated = engine.requests.filter((r) => r.authHeader !== expectedAuth)
+check(
+  "every engine call carries Authorization: Bearer <PAT>",
+  engine.requests.length > 0 && unauthenticated.length === 0,
+  `${unauthenticated.length}/${engine.requests.length} unauthenticated: ${JSON.stringify(unauthenticated.map((r) => `${r.method}:${r.tool ?? ""}`))}`,
+)
+check(
+  "the initialize handshake is authenticated too",
+  engine.requests[0]?.method === "initialize" && engine.requests[0]?.authHeader === expectedAuth,
+  JSON.stringify(engine.requests[0]),
+)
+check(
+  "the recovered handshake after the outage is authenticated",
+  engine.requests.filter((r) => r.method === "initialize").every((r) => r.authHeader === expectedAuth),
 )
 
 server.closeAllConnections()

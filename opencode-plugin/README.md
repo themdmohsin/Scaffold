@@ -20,7 +20,8 @@ bun run --cwd packages/opencode src/index.ts --version  # prints "local"
 
 OpenCode auto-loads plugins from `.opencode/plugins/` of the project you open.
 To try it: run the CLI from a directory containing `.opencode/plugins/scaffold.ts`
-(this repo's `opencode-plugin/` works), with `SCAFFOLD_ENGINE_URL` set.
+(this repo's `opencode-plugin/` works), with `SCAFFOLD_ENGINE_URL` and `SCAFFOLD_TOKEN`
+(a PAT from `POST /auth/tokens`) set.
 
 ## What the plugin does (Day 4)
 
@@ -36,7 +37,17 @@ just a small JSON-RPC client so the file stays copy-pasteable.
 | `tool.execute.before` | for `write`/`edit`/`apply_patch`, extracts `/api/...`-style routes from the arguments and pins `get_api_contract(route)` into the next request |
 | `tool.execute.after` | for `write`/`edit`/`apply_patch`, reports `report_change(diff_summary, files_changed)` built from the tool result's real additions/deletions |
 | `experimental.session.compacting` | keeps the context block across compaction |
-| `shell.env` | injects `SCAFFOLD_ENGINE_URL` / `SCAFFOLD_PROJECT_DIR` |
+| `shell.env` | injects `SCAFFOLD_ENGINE_URL` / `SCAFFOLD_PROJECT_DIR` / `SCAFFOLD_TOKEN` |
+
+## Authentication (Phase 6)
+
+The engine verifies identity on every request. Set `SCAFFOLD_TOKEN` to a personal access
+token (`scaffold_…`) minted with `POST /auth/tokens`; the plugin sends it as
+`Authorization: Bearer` on every MCP call (initialize included) and injects it into
+`shell.env`, so CLIs the agent spawns authenticate with the same identity. Tokens are
+hashed server-side, shown once at mint time, revocable, and optionally scoped to one
+project. Without a token the engine answers 401 (or 503 when `SUPABASE_JWT_SECRET` is
+unset) and the hooks fail open — warnings only, nothing injected.
 
 Project resolution: the plugin never sends a `project_id`; the engine falls back to
 `SCAFFOLD_DEFAULT_PROJECT_ID` (the frozen single-project convention).
@@ -53,7 +64,7 @@ contents (repo rule #4) and never an LLM guess about what changed (rule #2).
 cd opencode-plugin
 npm install                                                    # one-time: TypeScript + the plugin's real type deps
 npm run typecheck                                              # strict tsc against the vendored plugin types
-node tests/verify_plugin.ts                                    # 55 checks, fake engine, no deps
+node tests/verify_plugin.ts                                    # 63 checks, fake engine, no deps
 python tests/mcp_sdk_interop.py                                # 17 checks vs the real mcp SDK
 python tests/acceptance_live.py --self-test                    # 4 checks: the acceptance runner works
 ```
@@ -86,10 +97,13 @@ Postgres, real project state — start the engine (`engine/.env` with `DATABASE_
 `SCAFFOLD_DEFAULT_PROJECT_ID`, schema applied, `uvicorn app.main:app`) and run:
 
 ```bash
-python tests/acceptance_live.py                    # $SCAFFOLD_ENGINE_URL, else localhost:8000
-python tests/acceptance_live.py --url http://192.168.1.20:8000
-SCAFFOLD_ACCEPTANCE_REPORT=1 python tests/acceptance_live.py   # also exercises report_change
+SCAFFOLD_TOKEN=scaffold_... python tests/acceptance_live.py                    # $SCAFFOLD_ENGINE_URL, else localhost:8000
+SCAFFOLD_TOKEN=scaffold_... python tests/acceptance_live.py --url http://192.168.1.20:8000
+SCAFFOLD_TOKEN=scaffold_... SCAFFOLD_ACCEPTANCE_REPORT=1 python tests/acceptance_live.py   # also exercises report_change
 ```
+
+The live engine requires a PAT on every MCP call (`SCAFFOLD_TOKEN`); the runner refuses
+to start the live leg without it and says so.
 
 No LLM key is needed and no coding session is started: it drives the same hooks OpenCode calls and
 prints the block the agent would receive, verbatim — paste that into `docs/HANDOFF.md` as the Day 4
