@@ -281,7 +281,8 @@ function TaskDrawer({
   useEffect(() => {
     const dlg = dialogRef.current;
     if (!dlg) return;
-    if (!dlg.open) dlg.showModal();
+    // showModal exists in all evergreen browsers; jsdom (tests) may lack it.
+    if (!dlg.open && typeof dlg.showModal === "function") dlg.showModal();
     const onCancel = (e: Event) => {
       e.preventDefault();
       onClose();

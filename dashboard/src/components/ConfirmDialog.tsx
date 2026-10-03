@@ -48,7 +48,8 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const dlg = dialogRef.current;
     if (!dlg) return;
-    if (request && !dlg.open) dlg.showModal();
+    // showModal exists in all evergreen browsers; jsdom (tests) may lack it.
+    if (request && !dlg.open && typeof dlg.showModal === "function") dlg.showModal();
     if (!request && dlg.open) dlg.close();
   }, [request]);
 
