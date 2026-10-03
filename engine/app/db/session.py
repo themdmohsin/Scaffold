@@ -4,6 +4,7 @@ The engine is created lazily so the app can boot (and serve /health) before
 DATABASE_URL exists — e.g. right after cloning, before Supabase is set up.
 """
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -32,6 +33,103 @@ def _apply_sql_migration(engine: Engine, filename: str, label: str) -> None:
         print(f"[scaffold] {label} migration warning (continuing): {exc}")
 
 
+def _iter_sql_statements(sql_text: str) -> Iterator[str]:
+    """Split a multi-statement SQL migration into individual statements.
+
+    Splits on semicolons OUTSIDE of single-quoted strings, dollar-quoted blocks
+    ($$...$$), line comments (-- …) and block comments (/* … */). Needed because
+    psycopg3's simple query protocol rejects anything that even LOOKS like a
+    client-side placeholder (%s/%I/%t) inside DO blocks' format()/RAISE bodies —
+    so auth migration DO blocks were rewritten as plain statements, and this
+    splitter lets each statement fail-and-skip on its own (e.g. RLS policies
+    referencing Supabase's auth.uid() on a plain Postgres rig).
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(sql_text)
+    state = "normal"  # normal | line_comment | block_comment | single | dollar
+    dollar_tag = ""
+
+    def flush() -> None:
+        text_ = "".join(buf).strip()
+        buf.clear()
+        if text_:
+            statements.append(text_)
+
+    while i < n:
+        ch = sql_text[i]
+        nxt = sql_text[i + 1] if i + 1 < n else ""
+
+        if state == "line_comment":
+            buf.append(ch)
+            if ch == "\n":
+                state = "normal"
+            i += 1
+            continue
+        if state == "block_comment":
+            buf.append(ch)
+            if ch == "*" and nxt == "/":
+                buf.append(nxt)
+                i += 2
+                state = "normal"
+                continue
+            i += 1
+            continue
+        if state == "single":
+            buf.append(ch)
+            if ch == "'":
+                if nxt == "'":  # escaped quote
+                    buf.append(nxt)
+                    i += 2
+                    continue
+                state = "normal"
+            i += 1
+            continue
+        if state == "dollar":
+            buf.append(ch)
+            if sql_text.startswith(dollar_tag, i):
+                buf.extend(dollar_tag[1:])
+                i += len(dollar_tag)
+                state = "normal"
+            else:
+                i += 1
+            continue
+
+        # normal state
+        if ch == "-" and nxt == "-":
+            state = "line_comment"
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            state = "block_comment"
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "'":
+            state = "single"
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "$":
+            m = re.match(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$", sql_text[i:])
+            if m:
+                dollar_tag = m.group(0)
+                state = "dollar"
+                buf.append(ch)
+                i += 1
+                continue
+        if ch == ";":
+            flush()
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+
+    flush()
+    return iter(statements)
+
+
 def _apply_day3_migration(engine: Engine) -> None:
     """Idempotent Day 3 DDL (migrate_day3.sql): pgvector + embedding columns +
     realtime publication."""
@@ -57,6 +155,37 @@ def _apply_phase5_migration(engine: Engine) -> None:
     the secret-value layer (scaffold_secrets schema: keyring + ciphertext), and
     realtime publication for the metadata tables."""
     _apply_sql_migration(engine, "migrate_phase5.sql", "phase5 (secure environment)")
+
+
+def _apply_auth_migration(engine: Engine) -> None:
+    """Idempotent Phase 6 DDL (migrate_auth.sql): accounts, project_members,
+    personal_access_tokens, invites, users.account_id, and the Row Level
+    Security policies that scope dashboard/anon reads to active members.
+
+    Unlike the earlier migrations (single multi-statement blob), this one is
+    applied statement-by-statement with per-statement tolerance: one failing
+    statement (e.g. RLS policies that need Supabase's auth.uid() on a plain
+    Postgres rig, or a publication that only exists in Supabase) is reported
+    and skipped WITHOUT aborting the rest — same fail-open-boot philosophy as
+    _apply_sql_migration, at statement granularity.
+    """
+    sql_text = Path(__file__).with_name("migrate_auth.sql").read_text(encoding="utf-8")
+    applied = 0
+    for stmt in _iter_sql_statements(sql_text):
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql(stmt)
+                conn.commit()
+            applied += 1
+        except Exception as exc:  # noqa: BLE001 — per-statement tolerance
+            print(
+                f"[scaffold] auth migration statement skipped: "
+                f"{type(exc).__name__}: {str(exc)[:200]}"
+            )
+    if applied:
+        print(f"[scaffold] auth migration: {applied} statements applied")
+    else:
+        print("[scaffold] auth migration: nothing new to apply")
 
 
 def _init() -> sessionmaker:
@@ -88,6 +217,7 @@ def _init() -> sessionmaker:
     _apply_phase2_migration(_engine)
     _apply_phase3_migration(_engine)
     _apply_phase5_migration(_engine)
+    _apply_auth_migration(_engine)
     return _SessionLocal
 
 

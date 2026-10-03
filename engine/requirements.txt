@@ -10,3 +10,4 @@ mcp>=2.0
 httpx>=0.28
 litellm>=1.50
 pgvector>=0.3.6
+PyJWT[crypto]>=2.8
