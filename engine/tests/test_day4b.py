@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["GITHUB_WEBHOOK_SECRET"] = "test-secret"
 os.environ["SCAFFOLD_GITHUB_REPO"] = "themdmohsin/Scaffold"
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -182,6 +184,7 @@ from app.db.models import ApiContract, Blocker, Event, Project  # noqa: E402
 from app.services import github_issues as gi2  # noqa: E402
 
 client = TestClient(app)
+client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
 db = _init()()
 proj = Project(name=f"day4b-test-{uuid.uuid4().hex[:6]}", goal="conflict e2e")
 db.add(proj)
@@ -191,6 +194,8 @@ db.add(ApiContract(project_id=PID, route="/api/auth/login", method="POST", reque
 db.commit()
 PID_STR = str(PID)
 db.close()
+# Phase 6: the harness acts as an authenticated ACTIVE member of the project.
+auth.set_role(PID_STR, auth.OWNER_SUB, "owner")
 
 # stub the issue action at the recorder boundary — we assert events/blockers here,
 # the issue action itself is covered in section 2.

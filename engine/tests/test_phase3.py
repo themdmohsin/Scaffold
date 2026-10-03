@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ["GITHUB_WEBHOOK_SECRET"] = "test-secret"
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -112,6 +114,9 @@ else:
     from app.main import app  # noqa: E402
 
     client = TestClient(app, raise_server_exceptions=False)
+    # Phase 6: identity comes from the Bearer token; POST /projects makes the
+    # CALLER the owner, so the client's default identity is the project owner.
+    client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
     SessionLocal = _init()
 
     r = client.post("/projects", json={"name": "phase3-test-team-collab"})
@@ -123,8 +128,13 @@ else:
         r = client.post(f"/projects/{pid}/invite", json={})
         check("Day 5 invite endpoint untouched", r.status_code == 201, r.text)
         code = r.json()["code"]
-        r = client.post("/projects/join", json={"code": code, "name": "Mohsin", "role": "backend"})
-        check("Day 5 join endpoint untouched", r.status_code == 201, r.text)
+        mohsin_jwt, _mohsin_sub = auth.extra_member("Mohsin")
+        r = client.post(
+            "/projects/join",
+            json={"code": code, "name": "Mohsin", "role": "backend"},
+            headers=auth.auth_headers(mohsin_jwt),
+        )
+        check("Day 5 join endpoint untouched (identity now from the token)", r.status_code == 201, r.text)
         mohsin_id = r.json()["user_id"]
 
         # --- members roster ----------------------------------------------------
@@ -160,21 +170,40 @@ else:
         agent_row = next(m for m in r.json() if m["id"] == agent_id)
         check("agent's current_task reflects the assigned task", agent_row["current_task"] is not None and agent_row["current_task"]["id"] == task_id, str(agent_row))
 
-        # --- ownership: bootstrap, gate, transfer -------------------------------
+        # --- ownership: gate, transfer ------------------------------------------
+        # The creator already owns the project (POST /projects), so the FIRST
+        # transfer is owner-gated; after it the creator is demoted to member.
         r = client.post(f"/projects/{pid}/owner", json={"user_id": mohsin_id})
-        check("first owner claim bootstraps with no gate", r.status_code == 200 and r.json()["owner_user_id"] == mohsin_id, r.text)
+        check("owner transfers ownership to a member", r.status_code == 200 and r.json()["owner_user_id"] == mohsin_id, r.text)
 
         r = client.patch(f"/projects/{pid}/members/{agent_id}", json={"role": "member"})
-        check("owner-gated PATCH rejects a caller without requesting_user_id once an owner exists", r.status_code == 403, r.text)
+        check("admin-gated PATCH rejects the demoted (plain member) caller", r.status_code == 403, r.text)
 
-        r = client.patch(f"/projects/{pid}/members/{agent_id}", json={"role": "member", "requesting_user_id": mohsin_id})
-        check("owner-gated PATCH succeeds for the real owner", r.status_code == 200 and r.json()["role"] == "member", r.text)
+        r = client.patch(
+            f"/projects/{pid}/members/{agent_id}",
+            json={"role": "member", "requesting_user_id": mohsin_id},
+            headers=auth.auth_headers(mohsin_jwt),
+        )
+        check(
+            "admin-gated PATCH succeeds for the new owner (legacy requesting_user_id ignored)",
+            r.status_code == 200 and r.json()["role"] == "member",
+            r.text,
+        )
 
         r = client.post(f"/projects/{pid}/owner", json={"user_id": agent_id})
         check("non-owner cannot silently steal ownership", r.status_code == 403, r.text)
 
-        r = client.post(f"/projects/{pid}/owner", json={"user_id": agent_id, "requesting_user_id": mohsin_id})
+        r = client.post(
+            f"/projects/{pid}/owner",
+            json={"user_id": agent_id, "requesting_user_id": mohsin_id},
+            headers=auth.auth_headers(mohsin_jwt),
+        )
         check("current owner CAN transfer ownership", r.status_code == 200 and r.json()["owner_user_id"] == agent_id, r.text)
+        check(
+            "the agent's account now carries the owner role (agent is account-backed)",
+            auth.role_of(str(pid), auth.OWNER_SUB) == "owner",
+            str(auth.role_of(str(pid), auth.OWNER_SUB)),
+        )
 
         # --- removal: owner protected, membership soft-deleted ------------------
         r = client.delete(f"/projects/{pid}/members/{agent_id}?requesting_user_id={agent_id}")

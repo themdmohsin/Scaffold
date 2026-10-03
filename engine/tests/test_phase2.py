@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "test-secret")
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -91,6 +93,9 @@ else:
     from app.db.models import Event  # noqa: E402
 
     client = TestClient(app, raise_server_exceptions=False)
+    # Phase 6: identity comes from the Bearer token. POST /projects makes the
+    # CALLER the owner, so one owner token covers every call below.
+    client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
     SessionLocal = _init()
     db = SessionLocal()
 
@@ -103,17 +108,31 @@ else:
 
         # -- users route -----------------------------------------------------
         r = client.get(f"/projects/{pid}/users")
-        check("GET /users 200 empty roster on a fresh project", r.status_code == 200 and r.json() == [], r.text)
+        check(
+            "GET /users 200 shows the creator's roster identity on a fresh project",
+            r.status_code == 200 and [u["name"] for u in r.json()] == ["Owner"],
+            r.text,
+        )
 
         code = client.post(f"/projects/{pid}/invite").json()["code"]
-        alice = client.post("/projects/join", json={"code": code, "name": "Alice", "role": "backend"}).json()
+        # Each joiner is a distinct account: the invite binds the CALLER's
+        # verified identity, so a per-joiner token replaces the legacy name field.
+        alice_jwt, _alice_sub = auth.extra_member("Alice")
+        bob_jwt, _bob_sub = auth.extra_member("Bob")
+        alice = client.post(
+            "/projects/join",
+            json={"code": code, "name": "IGNORED legacy name", "role": "backend"},
+            headers=auth.auth_headers(alice_jwt),
+        ).json()
         alice_id = alice["user_id"]
-        bob = client.post("/projects/join", json={"code": code, "name": "Bob"}).json()
+        bob = client.post("/projects/join", json={"code": code}, headers=auth.auth_headers(bob_jwt)).json()
         bob_id = bob["user_id"]
+        check("join identity comes from the token, not the legacy name field", alice["name"] == "Alice", str(alice))
+        check("second joiner gets its own identity", bob["user_id"] != alice_id and bob["name"] == "Bob", str(bob))
 
         r = client.get(f"/projects/{pid}/users")
         names = sorted(u["name"] for u in r.json())
-        check("GET /users lists both joined users, name-sorted", names == ["Alice", "Bob"], str(r.json()))
+        check("GET /users lists the creator + both joined users, name-sorted", names == ["Alice", "Bob", "Owner"], str(r.json()))
         check("GET /users unknown project 404s", client.get(f"/projects/{uuid.uuid4()}/users").status_code == 404)
 
         # -- task create with Phase 2 fields + dependency -------------------
@@ -145,12 +164,28 @@ else:
         r = client.post(f"/projects/{pid}/tasks/{tid2}/dependencies", json={"depends_on_task_id": tid2})
         check("self-dependency rejected 400", r.status_code == 400, r.text)
 
-        other = client.post("/projects", json={"name": f"phase2-other-{uuid.uuid4().hex[:8]}"}).json()
-        other_task = client.post(f"/projects/{other['id']}/tasks", json={"title": "elsewhere"}).json()
+        # A DIFFERENT account owns the other project: cross-project isolation is
+        # now identity-enforced instead of assumed.
+        other_jwt = auth.jwt_for(auth.OUTSIDER_SUB)
+        other = client.post(
+            "/projects",
+            json={"name": f"phase2-other-{uuid.uuid4().hex[:8]}"},
+            headers=auth.auth_headers(other_jwt),
+        ).json()
+        other_task = client.post(
+            f"/projects/{other['id']}/tasks",
+            json={"title": "elsewhere"},
+            headers=auth.auth_headers(other_jwt),
+        ).json()
         r = client.post(f"/projects/{pid}/tasks/{tid2}/dependencies", json={"depends_on_task_id": other_task["id"]})
         check("cross-project dependency rejected 400", r.status_code == 400, r.text)
+        check("the other project is invisible to this project's owner",
+              client.get(f"/projects/{other['id']}/tasks").status_code == 403,
+              client.get(f"/projects/{other['id']}/tasks").text)
         db.execute(sa.text("DELETE FROM events WHERE project_id = :p"), {"p": other["id"]})
         db.execute(sa.text("DELETE FROM tasks WHERE project_id = :p"), {"p": other["id"]})
+        db.execute(sa.text("DELETE FROM users WHERE project_id = :p"), {"p": other["id"]})
+        db.execute(sa.text("DELETE FROM invites WHERE project_id = :p"), {"p": other["id"]})
         db.execute(sa.text("DELETE FROM projects WHERE id = :p"), {"p": other["id"]})
         db.commit()
 

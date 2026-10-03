@@ -17,6 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import tests.auth_helper as auth  # sets SUPABASE_JWT_SECRET / SUPABASE_URL BEFORE app.config
+
 os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "test-secret")
 
 PASS = []
@@ -108,6 +110,11 @@ db.add(User(project_id=proj.id, name="tester"))
 db.commit()
 PID = str(proj.id)
 db.close()
+
+# Real auth (Phase 6): give the harness's project an owner + admin + member,
+# then make every TestClient call carry the owner's Bearer JWT.
+pa, OWNER_JWT = auth.bootstrap(PID)
+client.headers.update(auth.auth_headers(OWNER_JWT))
 
 COMMIT_SHA = "abc123def4567890abcdef1234567890abcdef12"
 STUB_COMMIT = {
@@ -241,7 +248,7 @@ BASE = f"http://{HOST}:{PORT}/mcp"
 _next_id = 0
 
 
-def rpc(http: httpx.Client, method: str, params: dict | None = None, *, session_id: str | None = None, notify: bool = False):
+def rpc(http: httpx.Client, method: str, params: dict | None = None, *, session_id: str | None = None, notify: bool = False, token: str | None = "default"):
     global _next_id
     _next_id += 1
     msg: dict = {"jsonrpc": "2.0", "method": method}
@@ -250,6 +257,10 @@ def rpc(http: httpx.Client, method: str, params: dict | None = None, *, session_
     if params is not None:
         msg["params"] = params
     headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+    if token == "default":
+        token = OWNER_JWT  # default: authenticate as the harness owner
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if session_id:
         headers["mcp-session-id"] = session_id
     res = http.post(BASE, json=msg, headers=headers, timeout=20, follow_redirects=True)

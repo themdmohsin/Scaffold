@@ -28,6 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("GITHUB_WEBHOOK_SECRET", "test-secret")
 
+import tests.auth_helper as auth  # noqa: E402  (sets SUPABASE_JWT_SECRET before app.config)
+
 PASS = []
 FAIL = []
 
@@ -300,6 +302,9 @@ else:
     from app.main import app  # noqa: E402
 
     client = TestClient(app, raise_server_exceptions=False)
+    # Phase 6: identity comes from the Bearer token; POST /projects makes the
+    # CALLER the owner, so one owner token covers every call below.
+    client.headers.update(auth.auth_headers(auth.jwt_for(auth.OWNER_SUB)))
     SessionLocal = _init()
     db = SessionLocal()
 
@@ -311,7 +316,12 @@ else:
 
         # members: one developer joins via invite; an agent registers (Phase 3 routes)
         code = client.post(f"/projects/{pid}/invite").json()["code"]
-        alice = client.post("/projects/join", json={"code": code, "name": "Alice (P4)", "role": "backend"}).json()["user_id"]
+        alice_jwt, _alice_sub = auth.extra_member("Alice (P4)")
+        alice = client.post(
+            "/projects/join",
+            json={"code": code, "name": "Alice (P4)", "role": "backend"},
+            headers=auth.auth_headers(alice_jwt),
+        ).json()["user_id"]
         agent = client.post(f"/projects/{pid}/agents", json={"name": "Scout (P4)", "provider": "opencode", "model": "any"}).json()["id"]
 
         r = client.get(f"/projects/{pid}/recommendations", params={"user_id": alice})
