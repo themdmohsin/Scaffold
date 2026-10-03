@@ -22,8 +22,8 @@ import {
  * is exactly the Phase 5 model: metadata + permissions in the dashboard,
  * values only in the runtime.
  *
- * "Acting as" is the repo's placeholder identity (no auth yet — see Team.tsx):
- * it feeds `requesting_user_id` for owner-gated mutations.
+ * Identity is the signed-in session (Phase 6); the engine enforces owner-only mutations.
+
  */
 
 const STATUS_CLASS: Record<string, string> = {
@@ -34,15 +34,13 @@ const STATUS_CLASS: Record<string, string> = {
 
 interface Props {
   projectId: string;
-  ownerUserId: string | null;
   members: { id: string; name: string; kind: "developer" | "agent" }[];
   onChanged: () => void;
 }
 
-export default function Environment({ projectId, ownerUserId, members, onChanged }: Props) {
+export default function Environment({ projectId, members, onChanged }: Props) {
   const [env, setEnv] = useState<Awaited<ReturnType<typeof fetchEnvironment>> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actingAs, setActingAs] = useState("");
   const [newKey, setNewKey] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newRequired, setNewRequired] = useState(true);
@@ -85,7 +83,6 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
         description: newDesc.trim() || undefined,
         required: newRequired,
         value: newValue || undefined,
-        created_by: actingAs || undefined,
       });
       setNewKey("");
       setNewDesc("");
@@ -108,7 +105,6 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
       await patchEnvVariable(projectId, v.id, {
         value,
         value_changed: true,
-        requesting_user_id: actingAs || undefined,
       });
       setRotateValue((s) => ({ ...s, [v.id]: "" }));
       await load();
@@ -125,7 +121,7 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
     setBusy(true);
     setError(null);
     try {
-      await removeEnvVariable(projectId, v.id, actingAs || undefined);
+      await removeEnvVariable(projectId, v.id);
       await load();
       onChanged();
     } catch (err) {
@@ -143,7 +139,6 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
       await grantEnvAccess(projectId, {
         environment_variable_id: v.id,
         user_id: grantUser,
-        requesting_user_id: actingAs || undefined,
       });
       await loadGrants(v.id, v.key);
       onChanged();
@@ -158,7 +153,7 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
     setBusy(true);
     setError(null);
     try {
-      await revokeEnvAccess(projectId, grantId, actingAs || undefined);
+      await revokeEnvAccess(projectId, grantId);
       await loadGrants(v.id, v.key);
       onChanged();
     } catch (err) {
@@ -196,18 +191,6 @@ export default function Environment({ projectId, ownerUserId, members, onChanged
       {env && (
         <>
           <div className="env-acting">
-            <label>
-              Acting as (owner-gated actions):{" "}
-              <select value={actingAs} onChange={(e) => setActingAs(e.target.value)}>
-                <option value="">(none)</option>
-                {members.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                    {m.id === ownerUserId ? " (owner)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
             <span className="env-summary">
               {env.summary.configured}/{env.summary.total} configured
               {env.summary.required_missing > 0 && (

@@ -149,7 +149,7 @@ tests only).
    `python -m app.scripts.migrate` and re-check.
 2. Structured logs carry the reason (`scaffold.startup`, `scaffold.migrations` loggers).
 
-**Engine returns 503 on every authenticated route.** `SUPABASE_JWT_SECRET` is unset or
+**Engine returns 503 on every authenticated route.** The engine cannot verify tokens: `SUPABASE_URL` is unset or its JWKS (`/auth/v1/.well-known/jwks.json`) is unreachable and nothing is cached (ES256), or (legacy HS256) `SUPABASE_JWT_SECRET` is unset or
 wrong — fail-closed by design. Set it and redeploy.
 
 **Invite links stopped working.** `GITHUB_WEBHOOK_SECRET` also signs invite codes. If it

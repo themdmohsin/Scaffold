@@ -5,6 +5,8 @@
  * the "something changed" signal that triggers a refetch here.
  */
 
+import { getAccessToken } from "./supabase";
+
 export interface ProjectInfo {
   id: string;
   name: string;
@@ -120,6 +122,8 @@ export interface MemberInfo {
   current_task: { id: string; title: string; status: Task["status"] } | null;
   activity_status: ActivityStatus;
   last_activity_at: string | null;
+  // Phase 6 additive: true on the signed-in caller's own human roster row.
+  is_me?: boolean;
 }
 
 export interface InviteInfo {
@@ -134,7 +138,7 @@ export function createInvite(projectId: string) {
   return api<InviteInfo>(`/projects/${projectId}/invite`, { method: "POST", body: JSON.stringify({}) });
 }
 
-export function joinProject(body: { code: string; name: string; role?: string }) {
+export function joinProject(body: { code: string; name?: string; role?: string }) {
   return api<{ user_id: string; project_id: string; name: string; role: string | null }>(
     "/projects/join",
     { method: "POST", body: JSON.stringify(body) },
@@ -179,18 +183,111 @@ export function setProjectOwner(projectId: string, userId: string, requestingUse
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${ENGINE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : `engine returned ${res.status}`);
+/** Thrown for any non-2xx engine response; `status` lets callers branch on 401/403. */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
   }
-  return (await res.json()) as T;
 }
 
+// App registers a handler so an expired/revoked session (401) drops back to sign-in.
+let unauthorizedHandler: (() => void) | null = null;
+export function onUnauthorized(fn: (() => void) | null) {
+  unauthorizedHandler = fn;
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  // Identity is the verified Supabase session - never a body/query field.
+  const token = await getAccessToken();
+  const res = await fetch(`${ENGINE_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    if (res.status === 401) unauthorizedHandler?.();
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(
+      typeof body.detail === "string" ? body.detail : `engine returned ${res.status}`,
+      res.status,
+    );
+  }
+  // A 2xx that is not JSON means VITE_ENGINE_URL points at something that is not the
+  // engine (typically the dashboard's own nginx serving index.html). Say so.
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(
+      `${ENGINE_URL}${path} did not return JSON (got ${res.headers.get("content-type") ?? "unknown type"}). ` +
+        "VITE_ENGINE_URL probably does not point at the engine - fix it and rebuild the dashboard.",
+      res.status,
+    );
+  }
+}
+
+// --- Phase 6 (authentication) calls -----------------------------------------
+
+export interface Membership {
+  project_id: string;
+  supabase_role: "owner" | "admin" | "member";
+  joined_at: string | null;
+}
+
+export interface Me {
+  account_id: string;
+  via: "jwt" | "pat";
+  email: string | null;
+  full_name: string | null;
+  auth_provider: string | null;
+  token_scoped_project_id: string | null;
+  memberships: Membership[];
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  goal: string | null;
+  deadline: string | null;
+  created_at: string;
+  supabase_role: Membership["supabase_role"];
+  joined_at: string | null;
+}
+
+export interface TokenInfo {
+  id: string;
+  name: string;
+  token_prefix: string;
+  project_id: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export const fetchMe = () => api<Me>("/auth/me");
+export const fetchProjects = () => api<{ projects: ProjectSummary[] }>("/projects").then((r) => r.projects);
+
+export function createProject(body: { name: string; goal?: string | null }) {
+  return api<{ id: string; name: string }>("/projects", { method: "POST", body: JSON.stringify(body) });
+}
+
+export const fetchTokens = () => api<TokenInfo[]>("/auth/tokens");
+
+export function createToken(body: { name: string; project_id?: string | null }) {
+  return api<TokenInfo & { token: string; warning: string }>("/auth/tokens", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export const revokeToken = (id: string) =>
+  api<{ revoked: boolean; id: string }>(`/auth/tokens/${id}`, { method: "DELETE" });
 export const fetchContext = (projectId: string) => api<ContextSummary>(`/projects/${projectId}/context`);
 export const fetchTasks = (projectId: string) => api<Task[]>(`/projects/${projectId}/tasks`);
 export const fetchDecisions = (projectId: string) => api<Decision[]>(`/projects/${projectId}/decisions`);

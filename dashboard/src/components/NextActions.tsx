@@ -36,7 +36,10 @@ const KIND_LABEL: Record<NextActionKind, string> = {
 type NextActionKind = CoordinationSummary["recommended_next_step"]["kind"];
 
 export default function NextActions({ projectId, summary, members, onChanged }: Props) {
-  const [actingAs, setActingAs] = useState("");
+  // Defaults to the signed-in user's own roster row (session identity); the picker only
+  // lets them assign to / decline for an agent or teammate instead.
+  const [picked, setPicked] = useState("");
+  const actingAs = picked || members.find((m) => m.is_me)?.id || "";
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
@@ -45,7 +48,7 @@ export default function NextActions({ projectId, summary, members, onChanged }: 
 
   async function accept(taskId: string, title: string) {
     if (!actingAs) {
-      setMessage({ kind: "err", text: "Pick who is acting (acting as) first." });
+      setMessage({ kind: "err", text: "Pick who this is for first." });
       return;
     }
     setBusy(taskId);
@@ -63,7 +66,7 @@ export default function NextActions({ projectId, summary, members, onChanged }: 
 
   async function reject(taskId: string, title: string) {
     if (!actingAs) {
-      setMessage({ kind: "err", text: "Pick who is acting (acting as) first." });
+      setMessage({ kind: "err", text: "Pick who this is for first." });
       return;
     }
     setBusy(taskId);
@@ -92,12 +95,12 @@ export default function NextActions({ projectId, summary, members, onChanged }: 
       {summary.ready_to_start.length > 1 && (
         <div className="na-acting">
           <label>
-            Acting as{" "}
-            <select value={actingAs} onChange={(e) => setActingAs(e.target.value)}>
+            Assign to{" "}
+            <select value={actingAs} onChange={(e) => setPicked(e.target.value)}>
               <option value="">— pick a member or agent —</option>
               {members.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name} ({m.kind})
+                  {m.name} ({m.kind}){m.is_me ? " - you" : ""}
                 </option>
               ))}
             </select>

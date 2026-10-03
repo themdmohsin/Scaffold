@@ -1209,3 +1209,11 @@ button:disabled {
   align-items: center;
   gap: 12px;
 }
+
+/* Phase 6: sign-in + project picker */
+.login { max-width: 420px; }
+.login-form { flex-direction: column; align-items: stretch; gap: 8px; }
+button.link { background: none; border: none; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; }
+.project-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.project-card { text-align: left; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; cursor: pointer; }
+.project-header .empty { margin-right: 8px; }

@@ -31,9 +31,9 @@ for local runs. Never commit real values.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Supabase Postgres connection string. Use the **pooler** string (`...pooler.supabase.com:5432/postgres`). |
-| `SUPABASE_URL` | yes | `https://<ref>.supabase.co` — JWT issuer validation + docs links. |
+| `SUPABASE_URL` | yes | `https://<ref>.supabase.co` — JWT trust anchor too: ES256/RS256 tokens are verified against `<SUPABASE_URL>/auth/v1/.well-known/jwks.json` (cached, kid-selected, rotation-safe; no public key to copy). |
 | `SUPABASE_SERVICE_KEY` | yes | Service-role key; the engine bypasses RLS with it. |
-| `SUPABASE_JWT_SECRET` | yes | Supabase Dashboard → Settings → API → JWT Secret. **Without it every authenticated route 503s (fail closed).** |
+| `SUPABASE_JWT_SECRET` | legacy only | Only for projects still on the HS256 shared secret; leave empty on asymmetric projects. **With neither this nor `SUPABASE_URL`, every authenticated route 503s (fail closed).** |
 | `SCAFFOLD_TEAM_LLM_KEY` | for `/reason` | Pays for the engine's own reasoning/embedding calls only — never a developer's coding session. |
 | `GITHUB_WEBHOOK_SECRET` | for webhooks + invites | GitHub webhook HMAC secret; also signs invite codes. |
 | `GITHUB_TOKEN` | optional | Auto-filing conflict issues. |
@@ -66,7 +66,7 @@ Run against a **new** Supabase project (or to repair an existing one):
 
 ```bash
 cd engine
-cp .env.example .env   # fill DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_JWT_SECRET
+cp .env.example .env   # fill DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_KEY (SUPABASE_JWT_SECRET only for legacy HS256)
 python -m app.scripts.bootstrap_db
 ```
 
@@ -77,7 +77,7 @@ python -m app.scripts.bootstrap_db
 2. applies every migration in order (`0001`…`0006`) and records them in `schema_migrations`,
 3. adds the Realtime tables to the `supabase_realtime` publication,
 4. verifies the critical tables and the secret-store keyring exist,
-5. prints the next steps (set `SUPABASE_JWT_SECRET`, sign in, mint a PAT).
+5. prints the next steps (check `SUPABASE_URL`, sign in, mint a PAT).
 
 Useful flags: `--lenient` (plain Postgres rigs — skips Supabase-only RLS statements
 instead of failing), `--status` (verify only, apply nothing), `--retry-skipped`
@@ -101,7 +101,6 @@ fly secrets set \
   DATABASE_URL="postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres" \
   SUPABASE_URL="https://<ref>.supabase.co" \
   SUPABASE_SERVICE_KEY="<service-role-key>" \
-  SUPABASE_JWT_SECRET="<jwt-secret>" \
   GITHUB_WEBHOOK_SECRET="<webhook-secret>" \
   SCAFFOLD_TEAM_LLM_KEY="<llm-key>" \
   SCAFFOLD_CORS_ORIGINS="https://<dashboard-host>"
@@ -146,6 +145,16 @@ docker compose --profile local-db up -d  # + a throwaway pgvector Postgres on :5
 
 Notes:
 
+- **Dashboard build vars come from the repo-root `.env`** (see `.env.example`), not
+  `engine/.env` and not `dashboard/.env` (excluded from the Docker context). Compose passes
+  `VITE_ENGINE_URL` / `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` as build args; changing
+  them requires `docker compose up -d --build dashboard`. Without the two Supabase vars the
+  dashboard shows a "sign-in not configured" error.
+- **JWT verification needs only `SUPABASE_URL` in `engine/.env`** (the JWKS is derived from it;
+  `SUPABASE_JWT_SECRET` is legacy-HS256 only). The engine container must reach
+  `https://<ref>.supabase.co`. Restart after changes: `docker compose up -d engine`.
+- Dashboard flow: sign in (email/password or GitHub) -> project picker (`GET /projects`,
+  create, or join with an invite code) -> control center. Nobody pastes a project UUID.
 - `engine/.env` is mounted when present (`required: false`); without it, pass variables
   via `environment:` or the shell.
 - The `local-db` profile runs `pgvector/pgvector:pg16` (user/password/db `scaffold`).

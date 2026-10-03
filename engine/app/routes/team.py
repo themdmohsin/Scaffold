@@ -105,6 +105,7 @@ def _load_roster_rows(db: Session, project_id: uuid.UUID) -> dict:
                 "agent_session_id": u.agent_session_id,
                 "membership_status": u.membership_status,
                 "joined_at": u.joined_at,
+                "account_id": u.account_id,
             }
             for u in users
         ],
@@ -154,9 +155,18 @@ def list_members(
     def _iso(dt: datetime | None) -> str | None:
         return dt.isoformat() if dt else None
 
+    # ADDITIVE (Phase 6): flag the caller's own HUMAN roster row so the dashboard
+    # can act "as me" without an identity picker. Computed from the verified
+    # principal; no account ids are exposed.
+    my_ids = {
+        str(u["id"])
+        for u in data["users"]
+        if u["account_id"] == principal.account_id and u["kind"] != "agent"
+    }
     for r in rows:
         r["joined_at"] = _iso(r["joined_at"])
         r["last_activity_at"] = _iso(r["last_activity_at"])
+        r["is_me"] = r["id"] in my_ids
     return rows
 
 

@@ -100,6 +100,7 @@ from app.config import Settings, is_production, validate_settings  # noqa: E402
 
 dev = Settings(
     database_url="",
+    supabase_url="",
     supabase_jwt_secret="",
     scaffold_cors_origins="",
     scaffold_env="development",
@@ -113,6 +114,7 @@ check("is_production false for development", not is_production(dev))
 
 prod = Settings(
     database_url="",
+    supabase_url="",
     supabase_jwt_secret="",
     scaffold_cors_origins="",
     scaffold_env="production",
@@ -123,6 +125,8 @@ check("production: error names DATABASE_URL", any("DATABASE_URL" in e for e in p
 check("production: error names SUPABASE_JWT_SECRET", any("SUPABASE_JWT_SECRET" in e for e in prod_report.errors))
 check("production: error names CORS", any("CORS" in e for e in prod_report.errors))
 check("is_production true for production", is_production(prod))
+jwks_only = Settings(scaffold_env="production", database_url="x", supabase_url="https://abc.supabase.co", supabase_jwt_secret="", scaffold_cors_origins="https://a")
+check("production: SUPABASE_URL alone (JWKS verification) satisfies auth config", not any("SUPABASE_URL" in e and "503" in e for e in validate_settings(jwks_only).errors))
 
 bootstrap_armed = Settings(scaffold_env="production", scaffold_bootstrap_account_ids="abc", database_url="x", supabase_jwt_secret="y", scaffold_cors_origins="https://a")
 check("production: bootstrap escape hatch is an error", any("BOOTSTRAP" in e for e in validate_settings(bootstrap_armed).errors))

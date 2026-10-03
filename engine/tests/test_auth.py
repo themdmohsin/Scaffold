@@ -351,6 +351,10 @@ else:
         r = victim.post(f"/projects/{pid}/environment/request", json={"key": "AUTH_TEST_SECRET"})
         check("the revoked member is denied immediately", r.status_code == 403 and "s3cr3t" not in r.text, r.text)
 
+        roster_v = victim.get(f"/projects/{pid}/members").json()
+        check("members roster flags exactly the caller's own row with is_me",
+              [m["id"] for m in roster_v if m.get("is_me")] == [victim_id], str(roster_v))
+        check("roster never exposes account ids", all("account_id" not in m for m in roster_v))
         check("member CANNOT PATCH another member", mem.patch(f"/projects/{pid}/members/{victim_id}", json={"role": "member"}).status_code == 403)
         check("admin CAN PATCH another member", adm.patch(f"/projects/{pid}/members/{victim_id}", json={"role": "member"}).status_code == 200)
         check("admin CAN set the governed role of a member", adm.patch(f"/projects/{pid}/members/{victim_id}", json={"supabase_role": "admin"}).status_code == 200)
