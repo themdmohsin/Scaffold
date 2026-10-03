@@ -1,4 +1,13 @@
 # HANDOFF
+## Current State — 2026-10-03 — Buffy (Phase 6 REAL AUTHENTICATION MERGED to `main` via PR #13)
+
+Phase 6 (real authentication) landed on `main` via [PR #13](https://github.com/themdmohsin/Scaffold/pull/13)
+(branch `day8-bf-real-auth`, merge commit 9dfc4b2 — a clean 6-commit line off `00e88d1`, no conflicts).
+Post-merge re-verification on `main`: `python -m tests.test_auth` **133/133**, `python -m tests.test_day2`
+**31/31**. The detailed entry below (written pre-merge on the branch) describes exactly what is now on
+main — no follow-up merge work was needed.
+
+---
 ## Current State — 2026-10-03 — Buffy (Phase 6 REAL AUTHENTICATION on branch `day8-bf-real-auth` — NOT yet merged/pushed)
 
 The placeholder identity model is GONE. There is no "acting as" dropdown data path left in the
