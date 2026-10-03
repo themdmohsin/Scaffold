@@ -4,7 +4,7 @@ Replaces the placeholder "acting as" / requesting_user_id trust model:
 
   • IDENTITY  comes from the request itself, never a body/query field:
       - Supabase Auth JWT (Authorization: Bearer <jwt>) for dashboard users —
-        verified with SUPABASE_JWT_SECRET (HS256) or the configured public key,
+        verified against the Supabase JWKS (ES256/RS256, by kid) or SUPABASE_JWT_SECRET (legacy HS256),
         including audience/issuer checks against SUPABASE_URL.
       - Personal Access Token (Authorization: Bearer scaffold_<43+ chars>) for
         the OpenCode plugin / CLI / MCP calls — SHA-256 hash matched against
@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Account, PersonalAccessToken, ProjectMember, User
 from app.db.session import get_db
+from app.services import jwks as jwks_service
 
 PAT_PREFIX = "scaffold_"
 PAT_MIN_LEN = len(PAT_PREFIX) + 32
@@ -110,41 +111,61 @@ def _looks_like_pat(credential: str) -> bool:
 def _verify_jwt(credential: str) -> tuple[str, str | None]:
     """Verify a Supabase Auth JWT; return (supabase_user_id, email).
 
-    Checked: signature (secret or configured public key), exp/nbf, iss, aud.
-    Raises 401 on any failure — never a silent pass-through.
+    Two clearly separated paths, chosen by the (unverified) header `alg` - and
+    each path then pins `algorithms=` to exactly that family, so a token can
+    never pick its own verifier:
+
+      * ES256 / RS256 (Supabase asymmetric signing keys, the current default):
+        the public key is looked up in the project's JWKS
+        (`<SUPABASE_URL>/auth/v1/.well-known/jwks.json`) by the header `kid`,
+        cached, refreshed on unknown kid (services/jwks.py). No secret needed.
+      * HS256 (legacy shared-secret projects): verified with SUPABASE_JWT_SECRET.
+
+    Both paths check signature, exp (required), nbf/iat, iss, aud=authenticated.
+    Raises 401 on any bad token, AuthUnavailable (-> 503) when the engine
+    cannot verify at all. Never a silent pass-through. Tokens are not logged.
     """
-    secret = (settings.supabase_jwt_secret or "").strip()
-    if not secret:
-        raise AuthUnavailable(
-            "auth unavailable: SUPABASE_JWT_SECRET is not configured on the engine"
-        )
     expected_iss = (settings.supabase_url or "").strip().rstrip("/") + "/auth/v1"
     try:
         header = pyjwt.get_unverified_header(credential)
     except pyjwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="invalid token") from exc
 
-    key: str | tuple[str, ...]
-    if header.get("alg") == "HS256":
+    alg = header.get("alg")
+    key: object
+    if alg == "HS256":
+        secret = (settings.supabase_jwt_secret or "").strip()
+        if not secret:
+            raise AuthUnavailable(
+                "auth unavailable: SUPABASE_JWT_SECRET is not configured on the engine"
+            )
         key = secret
+    elif alg in jwks_service.SUPPORTED_ALGS:
+        if not (settings.supabase_url or "").strip():
+            raise AuthUnavailable("auth unavailable: SUPABASE_URL is not configured (needed for JWKS)")
+        kid = header.get("kid")
+        if not kid or not isinstance(kid, str):
+            raise HTTPException(status_code=401, detail="invalid token")
+        try:
+            jwk = jwks_service.cache.get_key(jwks_service.jwks_url_for(settings.supabase_url), kid)
+        except jwks_service.UnknownKid as exc:
+            raise HTTPException(status_code=401, detail="invalid token") from exc
+        except jwks_service.JwksUnavailable as exc:
+            raise AuthUnavailable("auth unavailable: cannot fetch Supabase JWKS") from exc
+        if jwk.algorithm_name and jwk.algorithm_name != alg:
+            raise HTTPException(status_code=401, detail="invalid token")
+        key = jwk.key
     else:
-        # Asymmetric (RS256/ES256/...): SUPABASE_JWT_SECRET holds the public
-        # key material (PEM or JWKS-style, one per line). Keys are tried in
-        # order — Supabase supports simultaneous key rotation.
-        keys = tuple(
-            chunk.strip() for chunk in secret.replace("\r", "").split("\n") if chunk.strip()
-        )
-        if not keys:
-            raise AuthUnavailable("auth unavailable: no verification keys configured")
-        key = keys
+        raise HTTPException(status_code=401, detail="invalid token")
 
     try:
         claims = pyjwt.decode(
             credential,
             key,
-            algorithms=["HS256", "RS256", "ES256", "PS256"],
+            algorithms=[alg],
             audience="authenticated",
             issuer=expected_iss,
+            leeway=10,  # modest clock-skew allowance for exp/nbf/iat
             options={"require": ["exp", "sub"]},
         )
     except pyjwt.InvalidIssuerError as exc:
@@ -158,7 +179,6 @@ def _verify_jwt(credential: str) -> tuple[str, str | None]:
     if not sub:
         raise HTTPException(status_code=401, detail="token missing sub claim")
     return str(sub), claims.get("email")
-
 
 def _verify_pat(db: Session, credential: str) -> tuple[PersonalAccessToken, Account]:
     """Match a PAT by hash and return (token, owner_account). 401 on any miss."""

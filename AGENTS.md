@@ -92,7 +92,7 @@ SCAFFOLD_TRUST_PROXY
 VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_ENGINE_URL
 SCAFFOLD_ENGINE_URL, SCAFFOLD_TOKEN
 ```
-(`SUPABASE_JWT_SECRET` verifies Supabase Auth JWTs — required, else 503 fail-closed. `SCAFFOLD_CORS_ORIGINS` = comma-separated browser origins, empty = wildcard dev-only. `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` = DEV/SEED only, auto-promotes listed Supabase user ids to owner. `SCAFFOLD_TOKEN` = the plugin's PAT, sent as `Authorization: Bearer` on every MCP call. `SCAFFOLD_ENV=production` makes startup config validation fatal; `SCAFFOLD_LOG_FORMAT`/`LEVEL` control structured logs; `SCAFFOLD_RATE_LIMIT_*` tune the in-process limiter (see `docs/OPERATIONS.md`); `SCAFFOLD_TRUST_PROXY=1` only behind Fly/Railway.)
+(Supabase Auth JWTs are verified via the JWKS derived from `SUPABASE_URL` (ES256/RS256, selected by `kid`, cached); `SUPABASE_JWT_SECRET` is legacy HS256 only; with neither set -> 503 fail-closed. `SCAFFOLD_CORS_ORIGINS` = comma-separated browser origins, empty = wildcard dev-only. `SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS` = DEV/SEED only, auto-promotes listed Supabase user ids to owner. `SCAFFOLD_TOKEN` = the plugin's PAT, sent as `Authorization: Bearer` on every MCP call. `SCAFFOLD_ENV=production` makes startup config validation fatal; `SCAFFOLD_LOG_FORMAT`/`LEVEL` control structured logs; `SCAFFOLD_RATE_LIMIT_*` tune the in-process limiter (see `docs/OPERATIONS.md`); `SCAFFOLD_TRUST_PROXY=1` only behind Fly/Railway.)
 
 ## Tech stack — do not substitute without asking a human
 
@@ -160,6 +160,7 @@ cd engine && python -m tests.test_phase4 # ready tasks, recommendations, next ac
 cd engine && python -m tests.test_phase5 # secure environment: metadata, grants, secret store, non-disclosure
 cd engine && python -m tests.test_auth   # Phase 6: JWT/PAT credentials, 401/403/role gates, invites, RLS
 cd engine && python -m tests.test_deploy # Day 9: migrations, /ready, rate limits, redaction, config
+cd engine && python -m tests.test_jwks   # Supabase ES256/JWKS verification (mocked JWKS)
 
 # plugin typecheck (vendored @opencode-ai/plugin types; npm here is only for tsc)
 cd opencode-plugin && npm install && npm run typecheck

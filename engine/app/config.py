@@ -33,11 +33,12 @@ class Settings(BaseSettings):
     # bootstraps one named 'default' with a server-generated random key).
     # Set it ONLY to pin a specific key across redeploys (see docs/SCHEMA.md).
     scaffold_secret_keyring: str = ""
-    # Phase 6 (real authentication). The engine verifies Supabase Auth JWTs with
-    # the project's JWT secret (Supabase Dashboard → Settings → API → JWT Secret)
-    # and derives the caller's identity from the token — never from a body/query
-    # field. Tokens use the HS256 signing key; if Supabase rotates to asymmetric
-    # keys, paste the public key(s) here instead.
+    # Phase 6 (real authentication). The engine derives the caller's identity from a verified
+    # token - never from a body/query field. Supabase Auth JWTs (ES256/RS256, the default for
+    # current projects) are verified against the project's JWKS, derived from SUPABASE_URL
+    # (<SUPABASE_URL>/auth/v1/.well-known/jwks.json, cached, kid-selected, rotation-safe).
+    # SUPABASE_JWT_SECRET is ONLY for legacy HS256 projects (shared secret); leave it empty
+    # on asymmetric projects. Never put a private key or an sb_secret_ key here.
     supabase_jwt_secret: str = ""
     # Comma-separated list of browser origins allowed to call the engine (CORS).
     # Empty (dev default) keeps the historical wildcard; ALWAYS set in any shared
@@ -114,14 +115,16 @@ def validate_settings(s: Settings | None = None) -> ValidationReport:
         )
         (report.errors if prod else report.warnings).append(msg)
 
-    # Auth — without the JWT secret every authenticated route 503s (fail closed).
-    if not s.supabase_jwt_secret:
+    # Auth: Supabase JWTs verify via JWKS (derived from SUPABASE_URL, ES256/RS256) or,
+    # for legacy HS256 projects, SUPABASE_JWT_SECRET. With neither, every authenticated
+    # route 503s (fail closed).
+    if not s.supabase_jwt_secret and not s.supabase_url:
         msg = (
-            "SUPABASE_JWT_SECRET is not set — every authenticated route and MCP tool will return "
-            "503 (fail closed). Find it at Supabase > Settings > API > JWT Secret."
+            "Neither SUPABASE_URL (JWKS verification, the default for asymmetric ES256/RS256 "
+            "projects) nor SUPABASE_JWT_SECRET (legacy HS256) is set - every authenticated route "
+            "and MCP tool will return 503 (fail closed). Set SUPABASE_URL=https://<ref>.supabase.co."
         )
         (report.errors if prod else report.warnings).append(msg)
-
     # CORS — wildcard is dev-only.
     if not s.scaffold_cors_origins.strip():
         msg = (
@@ -141,7 +144,7 @@ def validate_settings(s: Settings | None = None) -> ValidationReport:
 
     if not s.supabase_url:
         report.warnings.append(
-            "SUPABASE_URL is not set — JWT issuer validation falls back to the secret only and "
+            "SUPABASE_URL is not set — JWKS-based JWT verification and issuer validation are unavailable and "
             "Supabase Realtime/docs links are unavailable. Set it to https://<ref>.supabase.co."
         )
 

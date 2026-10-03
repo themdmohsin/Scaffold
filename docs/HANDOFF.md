@@ -1,4 +1,6 @@
 # HANDOFF
+## 2026-10-03 - JWKS verification for Supabase ES256 JWTs
+engine/app/services/jwks.py (new cache: kid-selected, TTL 600s, unknown-kid refresh with 30s cooldown, stale-ok 24h, fail closed), auth.py _verify_jwt split into ES256/RS256 (JWKS) vs HS256 (SUPABASE_JWT_SECRET, legacy) paths with alg pinned per path. SUPABASE_URL is now the only required var for asymmetric projects. New harness: python -m tests.test_jwks (51). NOT verified: a real browser login.
 ## 2026-10-03 - Final verification pass: dashboard auth UI (branch `day10-final-dashboard-auth`)
 
 **Finding:** the Phase 6 backend was real, but the dashboard was never integrated - it still had
@@ -1874,3 +1876,4 @@ thinking-token truncation).
 
 Next pair should start with: on a machine with engine/.env, run `python -m tests.test_day5`
 end to end (route legs included), then the two-laptop pass.
+
