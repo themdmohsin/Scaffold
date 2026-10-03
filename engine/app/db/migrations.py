@@ -107,6 +107,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         tolerant=True,
         description="accounts, project_members, PATs, invites, RLS policies, realtime",
     ),
+    Migration(
+        "0007",
+        "dashboard_team_app",
+        "migrate_dashboard_team.sql",
+        description="projects.github_repo (optional GitHub repo link for the dashboard create wizard)",
+    ),
 )
 
 _MANIFEST_BY_FILENAME = {m.filename: m for m in MIGRATIONS}

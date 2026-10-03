@@ -239,6 +239,22 @@ def update_task(
             )
         )
 
+    # Phase 6.5 (dashboard team app) additive: PATCH now accepts due_at (the
+    # frozen column existed Day 1 but was only settable at create time). Same
+    # Optional-without-clear semantics as owner_id; new additive event next to
+    # the frozen ones.
+    if body.due_at is not None and body.due_at != task.due_at:
+        old_due = task.due_at.isoformat() if task.due_at else None
+        task.due_at = body.due_at
+        changed["due_at"] = body.due_at.isoformat()
+        extra_events.append(
+            Event(
+                project_id=project_id,
+                type="task_due_changed",
+                payload={"task_id": str(task.id), "title": task.title, "from": old_due, "to": changed["due_at"]},
+            )
+        )
+
     if body.blocked is not None and body.blocked != task.blocked:
         task.blocked = body.blocked
         changed["blocked"] = body.blocked

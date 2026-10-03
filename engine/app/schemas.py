@@ -10,6 +10,9 @@ class ProjectCreate(BaseModel):
     name: str
     goal: str | None = None
     deadline: datetime | None = None
+    # Phase 6.5 (dashboard team app) additive: optional GitHub repo link, stored
+    # as "owner/repo" — display/metadata only, no webhook registration here.
+    github_repo: str | None = Field(default=None, max_length=200)
 
 
 class ProjectOut(BaseModel):
@@ -20,6 +23,8 @@ class ProjectOut(BaseModel):
     goal: str | None
     deadline: datetime | None
     created_at: datetime
+    # Phase 6.5 additive — absent from rows created before the migration.
+    github_repo: str | None = None
 
 
 PRIORITY_PATTERN = "^(low|medium|high|urgent)$"
@@ -50,6 +55,10 @@ class TaskUpdate(BaseModel):
     # Only read when `blocked` is being set to true: becomes the paired
     # blockers row's description so the Blockers panel shows a reason.
     blocker_reason: str | None = None
+    # Phase 6.5 (dashboard team app) additive — the frozen `due_at` column was
+    # already on tasks Day 1, but PATCH never accepted it. Follows the same
+    # Optional-without-clear semantics as `owner_id` (set/change supported).
+    due_at: datetime | None = None
 
 
 class DependencyCreate(BaseModel):

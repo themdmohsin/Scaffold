@@ -3,9 +3,16 @@
  *
  * Source of truth is the engine (docs/API_CONTRACTS.md); Supabase Realtime is only
  * the "something changed" signal that triggers a refetch here.
+ *
+ * Every request carries a timeout (AbortSignal) — a hung engine fails in
+ * seconds with a clear message instead of hanging the UI forever. Callers can
+ * pass their own `signal` (React Query cancellation on unmount) via `opts`.
  */
 
+import { ENGINE_URL as ENGINE_URL_BASE } from "../config";
 import { getAccessToken } from "./supabase";
+
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface ProjectInfo {
   id: string;
@@ -14,6 +21,8 @@ export interface ProjectInfo {
   deadline: string | null;
   // Phase 3 additive key — absent from older engines, hence optional.
   owner_user_id?: string | null;
+  // Phase 6.5 additive — optional GitHub repo link ("owner/repo").
+  github_repo?: string | null;
 }
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done";
@@ -130,16 +139,44 @@ export interface InviteInfo {
   invite_url: string;
   code: string;
   expires_at_epoch: number;
+  // Phase 6 additive keys on the governed invite row.
+  invite_id?: string;
+  supabase_role?: "owner" | "admin" | "member";
+  max_uses?: number | null;
+  use_count?: number;
+  revoked?: boolean;
 }
 
-export const fetchMembers = (projectId: string) => api<MemberInfo[]>(`/projects/${projectId}/members`);
-
-export function createInvite(projectId: string) {
-  return api<InviteInfo>(`/projects/${projectId}/invite`, { method: "POST", body: JSON.stringify({}) });
+export interface InviteRecord {
+  id: string;
+  code: string;
+  supabase_role: string;
+  max_uses: number | null;
+  use_count: number;
+  expires_at: string | null;
+  revoked: boolean;
+  created_at: string;
+  invited_by: string | null;
+  redemptions: { account_id: string; email: string | null; name: string | null; redeemed_at: string }[];
 }
 
-export function joinProject(body: { code: string; name?: string; role?: string }) {
-  return api<{ user_id: string; project_id: string; name: string; role: string | null }>(
+export const fetchMembers = (projectId: string, opts?: ApiOptions) =>
+  api<MemberInfo[]>(`/projects/${projectId}/members`, undefined, opts);
+
+export function createInvite(projectId: string, body: { supabase_role?: "admin" | "member"; max_uses?: number | null; ttl_seconds?: number } = {}) {
+  return api<InviteInfo>(`/projects/${projectId}/invite`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export const fetchInvites = (projectId: string, opts?: ApiOptions) =>
+  api<InviteRecord[]>(`/projects/${projectId}/invites`, undefined, opts);
+
+export const revokeInvite = (projectId: string, inviteId: string) =>
+  api<{ revoked: boolean; id: string }>(`/projects/${projectId}/invites/${inviteId}`, { method: "DELETE" });
+
+export function joinProject(body: { code: string }) {
+  // Identity comes from the session; name/role are accepted-but-ignored by the
+  // engine so we no longer send them at all.
+  return api<{ user_id: string; project_id: string; name: string; role: string | null; existing?: boolean; supabase_role?: string }>(
     "/projects/join",
     { method: "POST", body: JSON.stringify(body) },
   );
@@ -174,6 +211,21 @@ export function removeMember(projectId: string, memberId: string, requestingUser
   );
 }
 
+// --- Ready tasks (Phase 4) — the board and TaskList use the engine's
+// deterministic READY classification; never recomputed client-side.
+export interface ReadyTasksResponse {
+  ready_tasks: ReadyTask[];
+  count: number;
+  ready_task_ids: string[];
+  unassigned_ready_count: number;
+  generated_at: string;
+}
+
+export const fetchReadyTasks = (projectId: string, userId?: string | null, opts?: ApiOptions) => {
+  const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
+  return api<ReadyTasksResponse>(`/projects/${projectId}/tasks/ready${qs}`, undefined, opts);
+};
+
 export function setProjectOwner(projectId: string, userId: string, requestingUserId?: string | null) {
   return api<{ project_id: string; owner_user_id: string }>(`/projects/${projectId}/owner`, {
     method: "POST",
@@ -181,7 +233,7 @@ export function setProjectOwner(projectId: string, userId: string, requestingUse
   });
 }
 
-const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const ENGINE_URL = ENGINE_URL_BASE;
 
 /** Thrown for any non-2xx engine response; `status` lets callers branch on 401/403. */
 export class ApiError extends Error {
@@ -193,23 +245,52 @@ export class ApiError extends Error {
   }
 }
 
+/** The request exceeded its deadline or the connection died mid-flight. */
+export class ApiTimeoutError extends ApiError {
+  constructor(message: string) {
+    super(message, 0);
+    this.name = "ApiTimeoutError";
+  }
+}
+
 // App registers a handler so an expired/revoked session (401) drops back to sign-in.
 let unauthorizedHandler: (() => void) | null = null;
 export function onUnauthorized(fn: (() => void) | null) {
   unauthorizedHandler = fn;
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export interface ApiOptions {
+  /** Propagate cancellation (React Query aborts signals when a query unmounts). */
+  signal?: AbortSignal;
+  /** Per-call timeout override (ms). Default 15s. */
+  timeoutMs?: number;
+}
+
+async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions): Promise<T> {
   // Identity is the verified Supabase session - never a body/query field.
   const token = await getAccessToken();
-  const res = await fetch(`${ENGINE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const timeout = AbortSignal.timeout(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const signal = opts?.signal
+    ? AbortSignal.any([opts.signal, timeout])
+    : timeout;
+  let res: Response;
+  try {
+    res = await fetch(`${ENGINE_URL}${path}`, {
+      ...init,
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    throw new ApiTimeoutError(
+      `Engine did not respond within ${(opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000}s (${ENGINE_URL}${path}). ` +
+        "It may be down, asleep, or VITE_ENGINE_URL may point at the wrong place.",
+    );
+  }
   if (!res.ok) {
     if (res.status === 401) unauthorizedHandler?.();
     const body = await res.json().catch(() => ({}));
@@ -258,6 +339,9 @@ export interface ProjectSummary {
   created_at: string;
   supabase_role: Membership["supabase_role"];
   joined_at: string | null;
+  // Phase 6.5 additive.
+  github_repo?: string | null;
+  owner_user_id?: string | null;
 }
 
 export interface TokenInfo {
@@ -271,10 +355,13 @@ export interface TokenInfo {
 }
 
 export const fetchMe = () => api<Me>("/auth/me");
-export const fetchProjects = () => api<{ projects: ProjectSummary[] }>("/projects").then((r) => r.projects);
+// Compat alias used by the older ProjectPicker; new code uses fetchMe.
+export const fetchMeOnce = fetchMe;
+export const fetchProjects = (opts?: ApiOptions) =>
+  api<{ projects: ProjectSummary[] }>("/projects", undefined, opts).then((r) => r.projects);
 
-export function createProject(body: { name: string; goal?: string | null }) {
-  return api<{ id: string; name: string }>("/projects", { method: "POST", body: JSON.stringify(body) });
+export function createProject(body: { name: string; goal?: string | null; deadline?: string | null; github_repo?: string | null }) {
+  return api<ProjectSummary & { owner_user_id?: string }>("/projects", { method: "POST", body: JSON.stringify(body) });
 }
 
 export const fetchTokens = () => api<TokenInfo[]>("/auth/tokens");
@@ -288,11 +375,24 @@ export function createToken(body: { name: string; project_id?: string | null }) 
 
 export const revokeToken = (id: string) =>
   api<{ revoked: boolean; id: string }>(`/auth/tokens/${id}`, { method: "DELETE" });
-export const fetchContext = (projectId: string) => api<ContextSummary>(`/projects/${projectId}/context`);
-export const fetchTasks = (projectId: string) => api<Task[]>(`/projects/${projectId}/tasks`);
-export const fetchDecisions = (projectId: string) => api<Decision[]>(`/projects/${projectId}/decisions`);
-export const fetchContracts = (projectId: string) => api<Contract[]>(`/projects/${projectId}/contracts`);
-export const fetchUsers = (projectId: string) => api<UserInfo[]>(`/projects/${projectId}/users`);
+export const fetchContext = (projectId: string, opts?: ApiOptions) =>
+  api<ContextSummary>(`/projects/${projectId}/context`, undefined, opts);
+export const fetchTasks = (projectId: string, opts?: ApiOptions) =>
+  api<Task[]>(`/projects/${projectId}/tasks`, undefined, opts);
+export const fetchDecisions = (projectId: string, opts?: ApiOptions) =>
+  api<Decision[]>(`/projects/${projectId}/decisions`, undefined, opts);
+
+export function createDecision(projectId: string, body: { text: string; reasoning?: string }) {
+  return api<Decision>(`/projects/${projectId}/decisions`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function createContract(projectId: string, body: { route: string; method: string; request_schema?: unknown; response_schema?: unknown; created_by_task_id?: string | null }) {
+  return api<Contract>(`/projects/${projectId}/contracts`, { method: "POST", body: JSON.stringify(body) });
+}
+export const fetchContracts = (projectId: string, opts?: ApiOptions) =>
+  api<Contract[]>(`/projects/${projectId}/contracts`, undefined, opts);
+export const fetchUsers = (projectId: string, opts?: ApiOptions) =>
+  api<UserInfo[]>(`/projects/${projectId}/users`, undefined, opts);
 
 export interface TaskCreateBody {
   title: string;
@@ -316,6 +416,8 @@ export interface TaskUpdateBody {
   priority?: TaskPriority;
   blocked?: boolean;
   blocker_reason?: string | null;
+  // Phase 6.5 additive — PATCH .../tasks now accepts the frozen due_at column.
+  due_at?: string | null;
 }
 
 export function patchTask(projectId: string, taskId: string, body: TaskUpdateBody) {
@@ -442,8 +544,8 @@ export interface RecommendationResponse {
   generated_at: string;
 }
 
-export const fetchCoordination = (projectId: string) =>
-  api<CoordinationSummary>(`/projects/${projectId}/coordination`);
+export const fetchCoordination = (projectId: string, opts?: ApiOptions) =>
+  api<CoordinationSummary>(`/projects/${projectId}/coordination`, undefined, opts);
 
 export const fetchRecommendation = (projectId: string, userId?: string | null) =>
   api<RecommendationResponse>(
@@ -517,8 +619,8 @@ export interface EnvTemplate {
   count: number;
 }
 
-export const fetchEnvironment = (projectId: string) =>
-  api<EnvironmentSummary>(`/projects/${projectId}/environment`);
+export const fetchEnvironment = (projectId: string, opts?: ApiOptions) =>
+  api<EnvironmentSummary>(`/projects/${projectId}/environment`, undefined, opts);
 
 export interface EnvVariableCreateBody {
   key: string;
@@ -577,9 +679,11 @@ export function grantEnvAccess(projectId: string, body: EnvGrantBody) {
   });
 }
 
-export const fetchEnvAccess = (projectId: string, variableId: string) =>
+export const fetchEnvAccess = (projectId: string, variableId: string, opts?: ApiOptions) =>
   api<EnvGrantInfo[]>(
     `/projects/${projectId}/environment/access?environment_variable_id=${encodeURIComponent(variableId)}`,
+    undefined,
+    opts,
   );
 
 export function revokeEnvAccess(projectId: string, grantId: string, requestingUserId?: string) {
