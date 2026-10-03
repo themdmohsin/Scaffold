@@ -37,6 +37,7 @@ Postgres (Supabase). The engine connects via `DATABASE_URL` (Supabase pooler con
 | agent_session_id | TEXT | Phase 3 addition — nullable; workspace/session identifier if the caller has one |
 | membership_status | TEXT | Phase 3 addition — default `'active'`, CHECK in (`'active'`,`'removed'`); soft-delete for `DELETE /projects/:id/members/:member_id` |
 | joined_at | TIMESTAMPTZ | Phase 3 addition — default `now()` |
+| account_id | UUID → accounts(id), ON DELETE SET NULL | Phase 6 addition — nullable; the authenticated account that owns this roster row (one human row plus one row per agent it registers). Legacy rows stay NULL. NOT unique — an account legitimately owns several rows per project (see Phase 6) |
 
 ### tasks
 | column | type | notes |
@@ -238,6 +239,126 @@ New `events.type` values (additive, payloads value-free by construction):
 `env_secret_retrieved`, `env_secret_rotated`, `env_variable_removed`,
 `env_variable_updated`.
 
+## Phase 6 additions (real authentication — migrate_auth.sql)
+
+Identity model: `projects` ← `project_members` → `accounts` (a mirror of Supabase
+`auth.users`). The frozen Day-1 `users` roster rows are NOT replaced — a roster row
+becomes ACCOUNT-BACKED by `users.account_id` (nullable; legacy rows survive). The engine
+resolves every request to a `Principal` (account + membership + role) from the
+`Authorization: Bearer` credential and NEVER from a body/query user id.
+
+### accounts (Phase 6)
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| supabase_user_id | TEXT NOT NULL UNIQUE | the Supabase `auth.users.id` (JWT `sub`) |
+| email | TEXT | from the Supabase token |
+| full_name | TEXT | from the Supabase token; roster names derive from it |
+| avatar_url | TEXT | |
+| auth_provider | TEXT NOT NULL DEFAULT `'email'` | `'email'` \| `'github'` (informational) |
+| created_at | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+| last_login_at | TIMESTAMPTZ | refreshed on authenticated use |
+
+### invites (Phase 6)
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| project_id | UUID → projects(id) ON DELETE CASCADE | |
+| code | TEXT NOT NULL UNIQUE | same `project_id.expiry.sig` HMAC format as the Day-5 stateless code, so old links keep working — now backed by a row, so it is revocable/bounded/inspectable |
+| invited_by | UUID → accounts(id) ON DELETE SET NULL | |
+| supabase_role | TEXT NOT NULL DEFAULT `'member'` | CHECK in (`'owner'`,`'admin'`,`'member'`) — the role the invitee receives |
+| max_uses | INTEGER | NULL = unlimited within the expiry |
+| use_count | INTEGER NOT NULL DEFAULT 0 | incremented on each redemption (multi-use cap enforced server-side) |
+| expires_at | TIMESTAMPTZ | NULL = no expiry |
+| revoked_at | TIMESTAMPTZ | soft revoke; redeeming a revoked row is refused |
+| created_at | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+
+### project_members (Phase 6)
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| project_id | UUID → projects(id) ON DELETE CASCADE | |
+| account_id | UUID → accounts(id) ON DELETE CASCADE | |
+| supabase_role | TEXT NOT NULL DEFAULT `'member'` | CHECK in (`'owner'`,`'admin'`,`'member'`) — deliberately NOT named `role` (reserved word). Exactly one active owner per project (enforced in `services/auth.py`) |
+| status | TEXT NOT NULL DEFAULT `'active'` | CHECK in (`'active'`,`'removed'`) — soft delete; every request checks `status='active'` |
+| invited_by | UUID → accounts(id) ON DELETE SET NULL | |
+| invite_id | UUID → invites(id) ON DELETE SET NULL | which invite row created this membership |
+| joined_at | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+
+UNIQUE `(project_id, account_id)`.
+
+### invite_redemptions (Phase 6)
+One row per join — the "who joined" audit trail behind `GET /projects/:id/invites`.
+
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| invite_id | UUID → invites(id) ON DELETE CASCADE | |
+| account_id | UUID → accounts(id) ON DELETE CASCADE | |
+| roster_user_id | UUID → users(id) ON DELETE SET NULL | the roster row created by the join |
+| redeemed_at | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+
+UNIQUE `(invite_id, account_id)`.
+
+### personal_access_tokens (Phase 6)
+Machine credentials for the OpenCode plugin / CLI / MCP. `token_hash` is the SHA-256 hex
+of the raw `scaffold_…` token; the raw value is shown ONCE at mint time and can never be
+recovered. Tokens are revoked (`revoked_at`), never deleted, so an audit trail survives.
+
+| column | type | notes |
+| --- | --- | --- |
+| id | UUID PK | default `gen_random_uuid()` |
+| account_id | UUID → accounts(id) ON DELETE CASCADE | the machine acts AS this account |
+| name | TEXT NOT NULL DEFAULT `'token'` | human label |
+| token_hash | TEXT NOT NULL UNIQUE | SHA-256 hex; the raw token is never stored |
+| token_prefix | TEXT NOT NULL DEFAULT `''` | short display prefix only |
+| project_id | UUID → projects(id) ON DELETE SET NULL | NULL = every project the account can see; set = scoped to that project only |
+| scopes | TEXT NOT NULL DEFAULT `'[]'::jsonb` | reserved |
+| created_at | TIMESTAMPTZ NOT NULL DEFAULT `now()` | |
+| last_used_at | TIMESTAMPTZ | refreshed on authenticated use |
+| revoked_at | TIMESTAMPTZ | soft revoke; a revoked token is refused with 401 |
+
+### Row Level Security (Phase 6)
+
+`migrate_auth.sql` enables RLS on every public data table (`accounts`, `invites`,
+`project_members`, `personal_access_tokens`, `users`, `tasks`, `task_dependencies`,
+`decisions`, `decision_affects_tasks`, `api_contracts`, `commits`, `blockers`, `events`,
+`environment_variables`, `environment_access`, `projects`) and grants SELECT-only policies
+to `anon`/`authenticated`:
+
+- `scaffold_is_active_member(project UUID)` — `SECURITY DEFINER`, TRUE when the JWT's
+  `sub` (`auth.uid()`) is an ACTIVE `project_members` row.
+- One `member_read` policy per table, scoped through `project_id`; tables without one
+  (`task_dependencies`, `decision_affects_tasks`) scope through their parent task, and
+  `environment_access` scopes through its `environment_variable_id` (both fail closed:
+  the inner SELECT is itself RLS-filtered, so non-members get NULL → FALSE).
+- `accounts`: `self_read` only — a user reads their OWN account row.
+- `project_members`: a user reads their own membership rows plus the roster of projects
+  they are on (the dashboard's Team panel needs both).
+- Writes are ENGINE-ONLY: no INSERT/UPDATE/DELETE policy is granted to `anon`/`authenticated`
+  (the service key bypasses RLS).
+- `scaffold_secrets.*` stays invisible to `anon` (no USAGE) — the ciphertext layer is
+  unreachable from the anon key even if a policy were ever mis-scoped.
+
+On a plain-Postgres rig (no `auth.uid()` / `anon` role) each statement fails-and-skips in
+`app/db/session.py`; the engine owns authorization in code there anyway (`require_member`).
+
+```sql
+-- Phase 6 additions (real authentication — migrate_auth.sql)
+CREATE INDEX idx_accounts_supabase_user    ON accounts(supabase_user_id);
+CREATE INDEX idx_invites_project           ON invites(project_id);
+CREATE INDEX idx_invites_code              ON invites(code);
+CREATE INDEX idx_project_members_project   ON project_members(project_id);
+CREATE INDEX idx_project_members_account   ON project_members(account_id);
+CREATE INDEX idx_project_members_project_status ON project_members(project_id, status);
+CREATE INDEX idx_invite_redemptions_invite ON invite_redemptions(invite_id);
+CREATE INDEX idx_pat_account               ON personal_access_tokens(account_id);
+CREATE INDEX idx_pat_project               ON personal_access_tokens(project_id);
+-- replaces the earlier UNIQUE index of the same name: NOT unique (human row + agent rows)
+CREATE INDEX idx_users_project_account     ON users(project_id, account_id) WHERE account_id IS NOT NULL;
+-- invites added to the supabase_realtime publication (Team panel: who was invited / who joined)
+```
+
 ## Changelog (append-only after Day 1)
 
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
@@ -245,4 +366,5 @@ New `events.type` values (additive, payloads value-free by construction):
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A): `tasks.status` CHECK widened to add `'review'` (`'todo'|'in_progress'|'review'|'done'`) — existing values untouched, this is a widening, not a rename. Additive nullable/defaulted columns on `tasks`: `description TEXT`, `priority TEXT DEFAULT 'medium'` (CHECK `'low'|'medium'|'high'|'urgent'`), `blocked BOOLEAN DEFAULT false`, `created_by UUID → users(id)`, `completed_at TIMESTAMPTZ`. Four new supporting indexes (above). `blockers` and `task_dependencies` added to the `supabase_realtime` publication (dashboard live updates for the Blockers panel and dependency chips). Applied by `engine/app/db/migrate_phase2.sql` (auto at engine startup, idempotent, chained after `migrate_day3.sql`). No tables renamed or dropped; `task_dependencies` (already frozen Day 1, previously unused by any route) is now read/written by the task routes.
 - 2026-09-30 — Phase 3 (team collaboration): additive only — `users` gains `kind` ('developer'|'agent'), `agent_provider`, `agent_model`, `agent_session_id`, `membership_status` ('active'|'removed'), `joined_at`; `projects` gains `owner_user_id` (FK → users, ON DELETE SET NULL). Two new indexes; `users` added to the `supabase_realtime` publication. No renames, no new tables — agents and developers share the existing `users` roster, and invitations still use the Day 5 stateless HMAC code (no invites table). Applied by `engine/app/db/migrate_phase3.sql` (auto at engine startup, idempotent).
 - 2026-09-30 — Phase 4 (intelligent coordination): **no schema changes** — coordination intelligence is pure computation over the existing tables (`tasks.status`/`blocked`/`priority`, `task_dependencies`, `blockers`, `api_contracts.created_by_task_id`, `users.kind`, `events`). No migration file; nothing new stored. The only new persistence is two new `events.type` values written by the human-override endpoints: `recommendation_accepted` and `recommendation_rejected` (payload `{task_id, user_id, title, note?}`) — event types are free-form by design; rejections are honored for 7 days by the recommender, not stored anywhere new.
+- 2026-10-03 — Phase 6 (real authentication, `day8-bf-real-auth`): additive only — five new tables (`accounts`, `invites`, `project_members`, `invite_redemptions`, `personal_access_tokens`), `users.account_id` (nullable FK → accounts; the earlier UNIQUE `idx_users_project_account` replaced by a plain partial index because an account owns both its human roster row and its agent rows), ten new indexes, `invites` added to the `supabase_realtime` publication, and ROW LEVEL SECURITY enabled on all sixteen public tables with SELECT-only `member_read` policies scoped to active members (`scaffold_is_active_member`, SECURITY DEFINER) plus per-account `self_read` on `accounts`. No frozen table/column renamed or dropped; the Day-5 invite route/response shapes are unchanged (the HMAC code format is preserved, now row-backed). Applied by `engine/app/db/migrate_auth.sql`, auto at engine startup, statement-by-statement with per-statement tolerance, verified 65/65 applied with zero skips on the live DB.
 - 2026-10-01 — Phase 5 (secure environment & context, `feature/secure-environment`): two new `public` tables — `environment_variables` (per-project env schema: key/description/required/is_secret/created_by/timestamps, `UNIQUE(project_id, key)`, key-shape CHECK) and `environment_access` (per-variable grants, `UNIQUE(environment_variable_id, user_id)`) — plus the NON-public `scaffold_secrets` schema: `keyring` (pgcrypto wrapping keys, 32 random bytes as hex TEXT generated server-side) and `environment_secrets` (ciphertext rows, `pgp_sym_encrypt` AES-256, FK-cascaded so no orphan ciphertext). Four new indexes; both public tables added to the `supabase_realtime` publication; the secret schema is REVOKEd from `anon`/`authenticated`. Supabase Vault was evaluated first and REJECTED on this database (verified live): its AEAD column-encryption internals require superuser the engine role lacks — pgcrypto PGP works with the service role, so that is the mechanism (limitations in the Phase 5 section above). No frozen table/column changed. Applied by `engine/app/db/migrate_phase5.sql` (auto at engine startup, idempotent, verified 3× on the live DB, incl. a bytea→text keyring repair step for earlier revisions).
