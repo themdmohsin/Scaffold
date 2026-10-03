@@ -218,7 +218,18 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       res.status,
     );
   }
-  return (await res.json()) as T;
+  // A 2xx that is not JSON means VITE_ENGINE_URL points at something that is not the
+  // engine (typically the dashboard's own nginx serving index.html). Say so.
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(
+      `${ENGINE_URL}${path} did not return JSON (got ${res.headers.get("content-type") ?? "unknown type"}). ` +
+        "VITE_ENGINE_URL probably does not point at the engine - fix it and rebuild the dashboard.",
+      res.status,
+    );
+  }
 }
 
 // --- Phase 6 (authentication) calls -----------------------------------------
