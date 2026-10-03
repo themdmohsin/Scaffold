@@ -380,6 +380,7 @@ Adopting an existing database replays the idempotent manifest as a no-op and rec
 
 ## Changelog (append-only after Day 1)
 
+- 2026-10-04 — Phase 6.5 (dashboard team app, `day11-bf-team-dashboard`): additive only — `projects` gains `github_repo TEXT NULL` (optional "owner/repo" display link for the create wizard / settings page; no webhook registration, no FK). Applied by migration 0007 `engine/app/db/migrate_dashboard_team.sql` (`ADD COLUMN IF NOT EXISTS`, idempotent; verified applied on the live DB). No frozen table/column renamed, dropped, or retyped.
 - 2026-10-03 — Day 9 (deployment hardening, `day9-bf-deploy-hardening`): **no product-table changes** — additive engine bookkeeping only. `schema_migrations` (above) records the ordered migration manifest; the runner (`app/db/migrations.py`) replaces the ad-hoc `_apply_*_migration()` startup calls and is what `python -m app.scripts.migrate` / `bootstrap_db` drive. `engine/app/db/schema.sql` was made idempotent (`CREATE TABLE/INDEX IF NOT EXISTS`) so adopting a pre-runner database replays cleanly. No frozen table/column renamed, dropped, or retyped; all six existing migration files are unchanged in meaning (checksums frozen once applied).
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
 - 2026-09-24 — Day 3: additive only — nullable `embedding VECTOR(1536)` on `decisions` + `api_contracts`, two HNSW cosine indexes, `tasks`/`decisions`/`events` added to the `supabase_realtime` publication. Applied by `engine/app/db/migrate_day3.sql` (auto at engine startup, idempotent).

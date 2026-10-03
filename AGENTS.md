@@ -140,6 +140,10 @@ cd engine && python -m app.scripts.backfill_embeddings
 cd dashboard && npm install && npm run dev
 # dashboard typecheck + production build
 cd dashboard && npm run build
+# dashboard unit tests (Vitest + Testing Library; no engine needed — fetch mocked)
+cd dashboard && npm test
+# dashboard Playwright smoke (needs `npx playwright install` + a live engine/Supabase; skips without E2E_EMAIL/E2E_PASSWORD)
+cd dashboard && npm run e2e
 
 # deploy (see docs/DEPLOYMENT.md for the full path)
 docker compose config                      # validate the compose file (no daemon needed)
