@@ -146,6 +146,15 @@ docker compose --profile local-db up -d  # + a throwaway pgvector Postgres on :5
 
 Notes:
 
+- **Dashboard build vars come from the repo-root `.env`** (see `.env.example`), not
+  `engine/.env` and not `dashboard/.env` (excluded from the Docker context). Compose passes
+  `VITE_ENGINE_URL` / `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` as build args; changing
+  them requires `docker compose up -d --build dashboard`. Without the two Supabase vars the
+  dashboard shows a "sign-in not configured" error.
+- **The engine needs `SUPABASE_JWT_SECRET` in `engine/.env`** or every JWT-authenticated
+  call (i.e. every dashboard call) returns 503. Restart: `docker compose up -d engine`.
+- Dashboard flow: sign in (email/password or GitHub) -> project picker (`GET /projects`,
+  create, or join with an invite code) -> control center. Nobody pastes a project UUID.
 - `engine/.env` is mounted when present (`required: false`); without it, pass variables
   via `environment:` or the shell.
 - The `local-db` profile runs `pgvector/pgvector:pg16` (user/password/db `scaffold`).

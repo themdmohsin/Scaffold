@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
 import {
+  ApiError,
+  fetchMe,
+  onUnauthorized,
+  type Me,
   createTask,
   addDependency,
   removeDependency,
@@ -23,6 +28,9 @@ import {
   type TaskUpdateBody,
   type UserInfo,
 } from "./lib/api";
+import { supabase } from "./lib/supabase";
+import Login from "./components/Login";
+import ProjectPicker from "./components/ProjectPicker";
 import { subscribeToProject, type RealtimeHandle } from "./lib/realtime";
 import { timeAgo } from "./lib/format";
 import Overview from "./components/Overview";
@@ -55,7 +63,10 @@ interface ProjectData {
 }
 
 export default function App() {
-  const [projectId, setProjectId] = useState("");
+  // undefined = still restoring the session; null = signed out.
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [me, setMe] = useState<Me | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [live, setLive] = useState<string>("");
   const [busyTask, setBusyTask] = useState<string | null>(null);
@@ -67,6 +78,48 @@ export default function App() {
   const [askError, setAskError] = useState<string | null>(null);
   const rtRef = useRef<RealtimeHandle | null>(null);
   const pidRef = useRef<string>("");
+
+  // Session lifecycle: restore, react to sign-in/out/refresh, and treat an
+  // engine 401 (expired/revoked/invalid credential) as "sign in again".
+  useEffect(() => {
+    if (!supabase) {
+      setSession(null);
+      return;
+    }
+    void supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => setSession(s));
+    onUnauthorized(() => {
+      setAuthNotice("Your session expired or was rejected by the engine - please sign in again.");
+      void supabase?.auth.signOut();
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+      onUnauthorized(null);
+    };
+  }, []);
+
+  const userId = session?.user.id ?? null;
+  useEffect(() => {
+    // Identity comes from the verified token: /auth/me -> account + memberships.
+    if (!userId) {
+      setMe(null);
+      leave();
+      return;
+    }
+    setAuthNotice(null);
+    fetchMe()
+      .then(setMe)
+      .catch((err) => {
+        if (!(err instanceof ApiError && err.status === 401)) {
+          setAuthNotice(`Signed in, but the engine rejected the session: ${err instanceof Error ? err.message : err}`);
+        }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  async function signOut() {
+    await supabase?.auth.signOut();
+  }
 
   const load = useCallback(async (id: string) => {
     const [context, tasks, users, decisions, contracts, members, coordination] = await Promise.all([
@@ -94,6 +147,8 @@ export default function App() {
       pidRef.current = id;
       try {
         const data = await load(id);
+        // New project / fresh invite redemption: pick up the new membership + role.
+        void fetchMe().then(setMe).catch(() => undefined);
         setPhase({ kind: "ok", data });
       } catch (err) {
         setPhase({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -224,6 +279,7 @@ export default function App() {
     setPhase({ kind: "idle" });
   }
 
+  const myRole = me?.memberships.find((m) => m.project_id === pidRef.current)?.supabase_role;
   const selectedTask = phase.kind === "ok" ? phase.data.tasks.find((t) => t.id === selectedTaskId) : undefined;
 
   return (
@@ -231,27 +287,28 @@ export default function App() {
       <h1>Scaffold</h1>
       <p className="tagline">Multiple agents. Multiple workspaces. One project brain.</p>
 
-      {phase.kind !== "ok" && (
-        <div className="form">
-          <input
-            placeholder="Paste a project ID to join"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && join(projectId.trim())}
-          />
-          <button onClick={() => join(projectId.trim())} disabled={phase.kind === "loading" || !projectId.trim()}>
-            {phase.kind === "loading" ? "Joining…" : "Join"}
-          </button>
-        </div>
+      {session === undefined && <section className="status">Loading…</section>}
+
+      {session === null && <Login notice={authNotice} />}
+
+      {session && authNotice && phase.kind !== "ok" && <section className="status error">⚠ {authNotice}</section>}
+
+      {session && me && phase.kind !== "ok" && (
+        <>
+          <div className="project-header">
+            <span className="empty">{me.email ?? me.full_name}</span>
+            <button onClick={() => void signOut()}>Sign out</button>
+          </div>
+          {phase.kind === "error" && <section className="status error">⚠ {phase.message}</section>}
+          {phase.kind === "loading" ? (
+            <section className="status">Opening project…</section>
+          ) : (
+            <ProjectPicker me={me} onSelect={(id) => void join(id)} />
+          )}
+        </>
       )}
 
-      {phase.kind === "error" && <section className="status error">⚠ {phase.message}</section>}
-
-      {phase.kind === "idle" && (
-        <section className="status">Join a project to see its live control center.</section>
-      )}
-
-      {phase.kind === "ok" && (
+      {session && me && phase.kind === "ok" && (
         <>
           <header className="project-header">
             <div>
@@ -261,7 +318,11 @@ export default function App() {
               </h2>
               {phase.data.context.project.goal && <p className="goal">{phase.data.context.project.goal}</p>}
             </div>
-            <button onClick={leave}>Leave</button>
+            <span className="empty">
+              {me.email ?? me.full_name} ({myRole ?? "member"})
+            </span>
+            <button onClick={leave}>Projects</button>
+            <button onClick={() => void signOut()}>Sign out</button>
           </header>
 
           <Overview context={phase.data.context} />
@@ -324,12 +385,12 @@ export default function App() {
             projectId={pidRef.current}
             members={phase.data.members}
             ownerUserId={phase.data.context.project.owner_user_id ?? null}
+            myRole={myRole}
             onChanged={refresh}
           />
 
           <Environment
             projectId={pidRef.current}
-            ownerUserId={phase.data.context.project.owner_user_id ?? null}
             members={phase.data.members.map((m) => ({ id: m.id, name: m.name, kind: m.kind }))}
             onChanged={refresh}
           />

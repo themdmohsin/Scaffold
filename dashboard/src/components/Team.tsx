@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   createInvite,
-  joinProject,
   registerAgent,
   removeMember,
   setProjectOwner,
@@ -13,11 +12,9 @@ import {
  * Team panel — Phase 3 (team collaboration). Isolated component: only talks
  * to the new additive endpoints in lib/api.ts, never touches the task board.
  *
- * There is no authentication in this app yet (see AGENTS.md / HANDOFF), so
- * "acting as" is a plain dropdown standing in for a logged-in identity —
- * exactly the `requesting_user_id` the engine's owner-gate checks. This
- * becomes a real session identity once auth exists; every other mutation in
- * this dashboard has the same trust model today.
+ * Identity is the signed-in Supabase session (Phase 6); the engine enforces the
+ * role gates (admin+ for member management/invites). `myRole` only decides which
+ * controls to render - it is never trusted for authorization.
  */
 
 function timeAgo(iso: string | null): string {
@@ -40,17 +37,14 @@ interface Props {
   projectId: string;
   members: MemberInfo[];
   ownerUserId: string | null;
+  myRole?: "owner" | "admin" | "member";
   onChanged: () => void;
 }
 
-export default function Team({ projectId, members, ownerUserId, onChanged }: Props) {
-  const [actingAs, setActingAs] = useState<string>("");
+export default function Team({ projectId, members, ownerUserId, myRole, onChanged }: Props) {
+  const canManage = myRole === "owner" || myRole === "admin";
   const [invite, setInvite] = useState<{ code: string; url: string } | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [joinName, setJoinName] = useState("");
-  const [joinRole, setJoinRole] = useState("");
-  const [joinCode, setJoinCode] = useState("");
-  const [joinError, setJoinError] = useState<string | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentProvider, setAgentProvider] = useState("");
   const [agentModel, setAgentModel] = useState("");
@@ -64,19 +58,6 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
       setInvite({ code: res.code, url: res.invite_url });
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function doJoin() {
-    setJoinError(null);
-    try {
-      await joinProject({ code: joinCode.trim(), name: joinName.trim(), role: joinRole.trim() || undefined });
-      setJoinName("");
-      setJoinRole("");
-      setJoinCode("");
-      onChanged();
-    } catch (err) {
-      setJoinError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -100,7 +81,7 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
   async function makeOwner(memberId: string) {
     setBusyId(memberId);
     try {
-      await setProjectOwner(projectId, memberId, actingAs || null);
+      await setProjectOwner(projectId, memberId);
       onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
@@ -112,7 +93,7 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
   async function changeRole(memberId: string, role: string) {
     setBusyId(memberId);
     try {
-      await updateMember(projectId, memberId, { role, requesting_user_id: actingAs || null });
+      await updateMember(projectId, memberId, { role });
       onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
@@ -125,7 +106,7 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
     if (!confirm("Remove this member from the project?")) return;
     setBusyId(memberId);
     try {
-      await removeMember(projectId, memberId, actingAs || null);
+      await removeMember(projectId, memberId);
       onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
@@ -139,23 +120,6 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
       <h3>Team</h3>
 
       {members.length === 0 && <p className="empty">No teammates or agents on this project yet.</p>}
-
-      {members.length > 0 && (
-        <div className="team-acting-as">
-          <label>
-            Acting as (for owner-gated actions):{" "}
-            <select value={actingAs} onChange={(e) => setActingAs(e.target.value)}>
-              <option value="">(none)</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                  {m.id === ownerUserId ? " (owner)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
 
       <table className="team-table">
         <thead>
@@ -174,6 +138,7 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
               <td>
                 {m.kind === "agent" ? "🤖 " : ""}
                 {m.name}
+                {m.is_me && <span className="badge-owner"> you</span>}
                 {m.id === ownerUserId && <span className="badge-owner"> owner</span>}
                 {m.kind === "agent" && (m.agent_provider || m.agent_model) && (
                   <div className="team-agent-meta">
@@ -184,7 +149,7 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
               <td>
                 <select
                   value={m.role ?? ""}
-                  disabled={busyId === m.id}
+                  disabled={busyId === m.id || !canManage}
                   onChange={(e) => changeRole(m.id, e.target.value)}
                 >
                   <option value="">(none)</option>
@@ -202,12 +167,12 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
               </td>
               <td>{timeAgo(m.last_activity_at)}</td>
               <td className="team-row-actions">
-                {m.id !== ownerUserId && (
+                {canManage && m.id !== ownerUserId && (
                   <button disabled={busyId === m.id} onClick={() => makeOwner(m.id)}>
                     Make owner
                   </button>
                 )}
-                {m.id !== ownerUserId && (
+                {canManage && m.id !== ownerUserId && (
                   <button disabled={busyId === m.id} onClick={() => remove(m.id)}>
                     Remove
                   </button>
@@ -221,25 +186,18 @@ export default function Team({ projectId, members, ownerUserId, onChanged }: Pro
       <div className="team-forms">
         <div className="team-form">
           <h4>Invite a teammate</h4>
-          <button onClick={generateInvite}>Generate invite link</button>
+          {canManage ? (
+            <button onClick={generateInvite}>Generate invite link</button>
+          ) : (
+            <small className="empty">Only project owners/admins can create invites.</small>
+          )}
           {inviteError && <p className="ask-error">⚠ {inviteError}</p>}
           {invite && (
             <div className="invite-result">
               <code>{invite.code}</code>
-              <small>Share this code — it's redeemed via "Join with a code" below (valid 7 days).</small>
+              <small>Share this code — it's redeemed from the project picker ("Join with an invite code").</small>
             </div>
           )}
-        </div>
-
-        <div className="team-form">
-          <h4>Join with a code</h4>
-          <input placeholder="Your name" value={joinName} onChange={(e) => setJoinName(e.target.value)} />
-          <input placeholder="Role (optional)" value={joinRole} onChange={(e) => setJoinRole(e.target.value)} />
-          <input placeholder="Invite code" value={joinCode} onChange={(e) => setJoinCode(e.target.value)} />
-          <button onClick={doJoin} disabled={!joinName.trim() || !joinCode.trim()}>
-            Join
-          </button>
-          {joinError && <p className="ask-error">⚠ {joinError}</p>}
         </div>
 
         <div className="team-form">

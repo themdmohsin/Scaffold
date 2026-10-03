@@ -1,4 +1,30 @@
 # HANDOFF
+## 2026-10-03 - Final verification pass: dashboard auth UI (branch `day10-final-dashboard-auth`)
+
+**Finding:** the Phase 6 backend was real, but the dashboard was never integrated - it still had
+the pre-auth "Paste a project ID to join" form, sent NO `Authorization` header (every engine call
+returned 401, visible in the engine logs), and used an "Acting as" dropdown for identity. The
+Phase 6 notes had explicitly deferred it ("dashboard UI thread is separate").
+
+**Built:** `lib/supabase.ts` (shared Supabase client, session JWT), `lib/api.ts` (Bearer on every
+call, `ApiError`, 401 -> sign-in handler, `/auth/me`, `/projects`, create project, PAT calls),
+`components/Login.tsx` (email+password, sign-up, GitHub OAuth, clear "not configured" error),
+`components/ProjectPicker.tsx` (GET /projects list, create, join-with-invite-code, PAT mint/revoke),
+`App.tsx` (session gate, Sign out, role badge, Projects back-button), realtime now uses the signed-in
+client (RLS-scoped). "Acting as" removed from Team/Environment; NextActions defaults to the caller's
+own roster row. Engine: `GET /projects/:id/members` gains additive `is_me` (no account ids exposed).
+Compose: dashboard build args come from repo-root `.env` (new `.env.example`); `dashboard/.env` is NOT
+visible to the Docker build.
+
+**Needs the human:** add `SUPABASE_JWT_SECRET` to `engine/.env` (absent today -> every JWT call 503s)
+and confirm `VITE_SUPABASE_*` in repo-root `.env`; rebuild with `docker compose up -d --build`.
+Existing project rows created before Phase 6 have no membership for your account: set
+`SCAFFOLD_BOOTSTRAP_ACCOUNT_IDS=<your supabase user id>` ONCE (dev only) so you are promoted to owner,
+or create a new project from the picker.
+
+**Not verified:** an interactive sign-in against the real Supabase project (needs the JWT secret + a
+real user). Verified instead: headless Edge renders the sign-in screen from the Docker image; engine
+401/503 behaviour; full harness suite 696/696.
 ## Current State — 2026-10-03 — Buffy (Day 9 DEPLOY HARDENING on branch `day9-bf-deploy-hardening` — NOT yet merged/pushed)
 
 **Goal:** make the engine deployable so teammates on different PCs share ONE engine (not
