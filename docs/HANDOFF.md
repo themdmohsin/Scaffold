@@ -1,5 +1,23 @@
 # HANDOFF
 
+## 2026-10-04 — Playwright smoke RUN against the live stack (branch `day11-bf-team-dashboard`, commit 9022d10)
+
+The one open verification item from the Phase 6.5 entry is CLOSED. Ran the real browser suite against the live local stack (engine already up on :8000 — /ready green incl. migration 0007; dashboard dev server started detached on :5173 via `npm run dev`, log at dashboard/dashboard-dev.log). Chromium installed via `npx playwright install chromium`. Test user created fresh through the real Supabase Auth signup (email confirmation OFF on this project) and verified engine-side: `GET /auth/me` → 200 with a new account id, 0 memberships.
+
+`E2E_EMAIL=… E2E_PASSWORD=… npx playwright test --project=chromium` → **3 passed (55.2s)**:
+1. `auth gate → sign in → create project wizard shows connect instructions` — 8.2s (gate blocks signed-out users; UI sign-in; wizard lands on the connect-your-client step)
+2. `deep links + refresh survive on every project route` — 13.2s (API-created project; direct `goto` + `reload` on /projects/:id/overview, /tasks, /team, /environment — all render their markers after BOTH navigation and F5)
+3. `invite deep link /join/:code lands inside the returned project` — 8.8s (API-created project + admin invite; `goto /join/<code>` → join → lands on `/projects/<pid>/overview`, refresh holds)
+
+Post-run re-verification: `npm test` 9/9, `npm run build` clean. One real (small) bug the smoke exposed and fixed: the sign-in inputs were placeholder-only with no accessible name (audit item "labels missing" survived on the Login screen because it predates the rewrite) — added `aria-label` to email/password; no other code changes, no feature changes.
+
+Housekeeping: `dashboard/.gitignore` now covers dashboard-dev.log / test-results / playwright-report. The engine on :8000 was NOT started by me (pre-existing); the :5173 dev server WAS started by me and is still running — stop it with `taskkill /PID <pid>` or just close the terminal if restarting later. E2E credentials are passed inline per run (never committed); `dashboard/e2e/probe-user.mjs` creates/verifies the user (sign-in first, signup fallback).
+
+Nothing pushed. Next person: the only remaining unverified leg for this phase is a manual GitHub OAuth round-trip (needs the GitHub provider enabled in Supabase Auth); everything else is now proven live.
+
+---
+
+
 ## 2026-10-04 — Dashboard is now a real team app (branch `day11-bf-team-dashboard` — NOT yet merged/pushed)
 
 The one-page demo is gone. React Router (`/projects`, `/projects/:id/{overview,tasks,team,environment,decisions,contracts,activity,settings}`, `/join/:code`) with a left nav; deep links + F5 work (nginx SPA fallback was already in place). React Query data layer: per-panel loading/error states (one failed request no longer blanks the app), 15s request timeouts with cancel signals, retries that skip 4xx, optimistic task moves with rollback, realtime→invalidation with a 600ms storm-coalescing window. Toasts + a ConfirmDialog replace every `alert()`/`confirm()`. Light/dark theme (CSS variables, `data-theme` on html, localStorage + prefers-color-scheme). Production builds REQUIRE `VITE_ENGINE_URL` — `src/config.ts` throws at boot instead of silently defaulting to localhost (dev still warns + defaults).

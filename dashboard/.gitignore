@@ -1,0 +1,4 @@
+# Dashboard run artifacts
+dashboard-dev.log
+test-results/
+playwright-report/
