@@ -16,6 +16,7 @@ from app.db.models import Project
 from app.db.session import get_db
 from app.routes.context import build_context
 from app.services import availability, reasoning, retrieval
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(tags=["reason"])
 
@@ -77,9 +78,13 @@ def _render_context(context: dict, hits: dict, max_chars: int = MAX_CONTEXT_CHAR
 
 
 @router.post("/projects/{project_id}/reason")
-def reason(project_id: uuid.UUID, body: ReasonRequest, db: Session = Depends(get_db)) -> dict:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+def reason(
+    project_id: uuid.UUID,
+    body: ReasonRequest,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_member(db, project_id, principal)
 
     context = build_context(db, project_id)
     hits = retrieval.retrieve_for_prompt(db, project_id, body.prompt)

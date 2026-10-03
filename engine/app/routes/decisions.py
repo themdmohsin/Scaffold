@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Decision, Event, Project, User
 from app.db.session import get_db
 from app.services import retrieval
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(prefix="/projects/{project_id}/decisions", tags=["decisions"])
 
@@ -32,9 +33,12 @@ def _out(d: Decision) -> dict:
 
 
 @router.get("")
-def list_decisions(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list[dict]:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+def list_decisions(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    require_member(db, project_id, principal)
     rows = db.scalars(
         select(Decision)
         .where(Decision.project_id == project_id)
@@ -45,10 +49,12 @@ def list_decisions(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list
 
 @router.post("", status_code=201)
 def create_decision(
-    project_id: uuid.UUID, body: DecisionCreate, db: Session = Depends(get_db)
+    project_id: uuid.UUID,
+    body: DecisionCreate,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
 ) -> dict:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+    require_member(db, project_id, principal)
     if body.made_by:
         user = db.get(User, body.made_by)
         if not user or user.project_id != project_id:

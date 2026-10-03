@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 from app.db.models import Blocker, Event, Task, TaskDependency, User
 from app.db.session import get_db
 from app.schemas import DependencyCreate, TaskCreate, TaskOut, TaskUpdate
+from app.services import auth as auth_service
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(prefix="/projects/{project_id}/tasks", tags=["tasks"])
 
@@ -110,8 +112,12 @@ def _resolve_task_blockers(db: Session, project_id: uuid.UUID, task_id: uuid.UUI
 
 
 @router.get("", response_model=list[TaskOut])
-def list_tasks(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list[dict]:
-    _require_project(db, project_id)
+def list_tasks(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    require_member(db, project_id, principal)
     tasks = db.scalars(
         select(Task).where(Task.project_id == project_id).order_by(Task.created_at.asc())
     ).all()
@@ -119,8 +125,13 @@ def list_tasks(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list[dic
 
 
 @router.post("", response_model=TaskOut, status_code=201)
-def create_task(project_id: uuid.UUID, body: TaskCreate, db: Session = Depends(get_db)) -> dict:
-    _require_project(db, project_id)
+def create_task(
+    project_id: uuid.UUID,
+    body: TaskCreate,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_member(db, project_id, principal)
     _validate_owner(db, project_id, body.owner_id)
     _validate_owner(db, project_id, body.created_by)  # created_by is also a project user
 
@@ -161,9 +172,10 @@ def update_task(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
     body: TaskUpdate,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     task = _require_task(db, project_id, task_id)
 
     changed: dict = {}
@@ -274,10 +286,11 @@ def add_dependency(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
     body: DependencyCreate,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """Add a `task depends on depends_on_task_id` edge (task_dependencies row)."""
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     task = _require_task(db, project_id, task_id)
     _validate_dependency_target(db, project_id, task_id, body.depends_on_task_id)
 
@@ -300,9 +313,10 @@ def remove_dependency(
     project_id: uuid.UUID,
     task_id: uuid.UUID,
     depends_on_task_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
     db: Session = Depends(get_db),
 ) -> dict:
-    _require_project(db, project_id)
+    require_member(db, project_id, principal)
     task = _require_task(db, project_id, task_id)
 
     existing = db.get(TaskDependency, {"task_id": task_id, "depends_on_task_id": depends_on_task_id})

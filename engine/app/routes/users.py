@@ -11,21 +11,25 @@ GET /projects/:id/users -> 200 [ { id, project_id, name, role } ] (by name asc)
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Project, User
+from app.db.models import User
 from app.db.session import get_db
 from app.schemas import UserOut
+from app.services.auth import Principal, require_member, require_principal
 
 router = APIRouter(prefix="/projects/{project_id}/users", tags=["users"])
 
 
 @router.get("", response_model=list[UserOut])
-def list_users(project_id: uuid.UUID, db: Session = Depends(get_db)) -> list[User]:
-    if not db.get(Project, project_id):
-        raise HTTPException(status_code=404, detail="project not found")
+def list_users(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> list[User]:
+    require_member(db, project_id, principal)
     return db.scalars(
         select(User).where(User.project_id == project_id).order_by(User.name.asc())
     ).all()

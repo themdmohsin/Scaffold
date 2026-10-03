@@ -10,6 +10,13 @@ Mounted into the FastAPI engine at /mcp (streamable HTTP). The OpenCode plugin
     report_change(diff_summary: str, files_changed: list[str])
     create_task(title: str, owner_id: str | None, due_at: str | None)
 
+CALLER IDENTITY (Phase 6): every /mcp request must carry Authorization: Bearer
+(a Supabase JWT or a scaffold_ PAT — enforced by the ASGI gate in main.py
+BEFORE any tool runs). Each tool then requires ACTIVE membership on the
+resolved project; identity always comes from the verified credential, never a
+tool argument. Legacy optional args (owner_id / user_id) are ACCEPTED but
+IGNORED for authorization.
+
 Project resolution: the project_id argument is OPTIONAL on every tool. When omitted,
 the server uses SCAFFOLD_DEFAULT_PROJECT_ID (engine .env) — the single-project
 convention for the demo. Multi-project clients pass the id explicitly.
@@ -23,15 +30,19 @@ from datetime import datetime
 
 from mcp.server.mcpserver import MCPServer
 
+from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import ApiContract, Decision, EnvironmentVariable, Event, Project, Task, User
 from app.db.session import _init
 from app.routes.context import build_context
+from app.services import auth as auth_service
 from app.services import coordination as coord
 from app.services import coordination_data as cdata
 from app.services import environment as environment_service
+from app.services.auth import Principal
 
 mcp = MCPServer("scaffold")
 
@@ -53,12 +64,31 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _principal() -> Principal:
+    """The verified caller, stashed by the /mcp Bearer gate (main.py)."""
+    principal = auth_service.current_mcp_principal.get()
+    if principal is None:
+        raise HTTPException(status_code=401, detail="no verified principal — send Authorization: Bearer")
+    return principal
+
+
+def _gate(db: Session, explicit_project_id: str | None) -> tuple[uuid.UUID, Principal]:
+    """Shared gate for every tool: resolve the project, require an ACTIVE
+    membership for the Bearer principal. 401 unauthenticated, 404 unknown
+    project, 403 non-member or PAT scoped to another project."""
+    principal = _principal()
+    pid = _resolve_project_id(explicit_project_id)
+    auth_service.require_member(db, pid, principal)
+    return pid, principal
+
+
 @mcp.tool()
 def get_project_context(project_id: str | None = None) -> dict:
     """Always-on project summary: goal, task counts, active tasks, recent decisions, contracts. Attach before coding."""
     db = _db()
     try:
-        return build_context(db, _resolve_project_id(project_id))
+        pid, _ = _gate(db, project_id)
+        return build_context(db, pid)
     finally:
         db.close()
 
@@ -71,7 +101,7 @@ def get_api_contract(route: str, project_id: str | None = None) -> dict:
     """
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         row = (
             db.query(ApiContract)
             .filter(ApiContract.project_id == pid, ApiContract.route == route)
@@ -98,7 +128,7 @@ def get_active_tasks(project_id: str | None = None) -> dict:
     """List non-done tasks (todo + in_progress), oldest first. 'Who is doing what'."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         rows = (
             db.query(Task)
             .filter(Task.project_id == pid, Task.status != "done")
@@ -127,7 +157,7 @@ def get_recent_decisions(limit: int = 5, project_id: str | None = None) -> dict:
     """Most recent decisions (newest first) so agents don't re-litigate them."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         rows = (
             db.query(Decision)
             .filter(Decision.project_id == pid)
@@ -163,7 +193,7 @@ def report_change(
     """
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         event = Event(
             project_id=pid,
             type="change_reported",
@@ -183,17 +213,20 @@ def create_task(
     due_at: str | None = None,
     project_id: str | None = None,
 ) -> dict:
-    """Create a task. owner_id is a user UUID on the project; due_at is ISO-8601."""
+    """Create a task. due_at is ISO-8601. Legacy owner_id is ACCEPTED but
+    IGNORED for authorization: the task's owner falls back to the CALLER's
+    roster/agent identity when owner_id is omitted or not valid here."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, principal = _gate(db, project_id)
         owner: uuid.UUID | None = None
         if owner_id:
             owner_uuid = uuid.UUID(owner_id)
             user = db.get(User, owner_uuid)
-            if not user or user.project_id != pid:
-                raise ValueError("owner_id is not a user on this project")
-            owner = owner_uuid
+            if user and user.project_id == pid:
+                owner = owner_uuid  # legacy hint honored only if valid on this project
+        if owner is None:
+            owner = auth_service.ensure_roster_user_or_agent(db, pid, principal).id
 
         task = Task(
             project_id=pid,
@@ -225,7 +258,7 @@ def get_ready_tasks(project_id: str | None = None) -> dict:
     Explainable — every row carries reasons. Deterministic (no LLM)."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         snap = cdata.load_snapshot(db, pid)
         incomplete = coord.incomplete_deps_per_task(snap["tasks"], snap["dep_edges"])
         downstream = coord.downstream_open_counts(snap["tasks"], snap["dep_edges"])
@@ -258,20 +291,18 @@ def get_ready_tasks(project_id: str | None = None) -> dict:
 @mcp.tool()
 def get_recommended_task(user_id: str | None = None, project_id: str | None = None) -> dict:
     """"What should I work on?" — one explainable, deterministic recommendation
-    for a member or agent (pass user_id of a project member; omit user_id for the
-    project-level best next step). The LLM never picks this; rules over real
-    project state do."""
+    for the CALLER (resolved from the Bearer credential; legacy user_id is
+    accepted but ignored). The LLM never picks this; rules over real project
+    state do."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, principal = _gate(db, project_id)
 
-        requester_id: str | None = None
-        if user_id:
-            uid = uuid.UUID(user_id)
-            user = db.get(User, uid)
-            if not user or user.project_id != pid:
-                raise ValueError("user_id is not a user on this project")
-            requester_id = str(uid)
+        # Identity = the verified caller (roster user for humans, their
+        # registered agent for PATs). Legacy user_id is ACCEPTED but IGNORED.
+        requester_id: str | None = str(
+            auth_service.ensure_roster_user_or_agent(db, pid, principal).id
+        )
 
         snap = cdata.load_snapshot(db, pid)
         rejected = coord.rejected_task_ids_from_events(snap["events"], requester_id or "", cdata.utcnow())
@@ -303,10 +334,11 @@ def get_recommended_task(user_id: str | None = None, project_id: str | None = No
 
 
 # ---- Phase 5: secure environment tools (deterministic; no LLM) ----------------
-# Metadata + template + AUTHORIZED value retrieval. The value tools take the
-# AGENT's own users-row id (register via POST /projects/:id/agents) and return
-# values ONLY for variables that agent has a grant for — agents get their
-# scoped environment, never the project's whole secret set (Phase 5 Feature 10).
+# Metadata + template + AUTHORIZED value retrieval. The value tool resolves
+# the CALLER's registered agent (a PAT owner's agent; register via POST
+# /projects/:id/agents) and returns values ONLY for variables that agent has
+# a grant for — agents get their scoped environment, never the project's
+# whole secret set (Phase 5 Feature 10).
 # NOTE: the dashboard never calls these; GET /context stays value-free.
 
 
@@ -317,7 +349,7 @@ def get_project_environment(project_id: str | None = None) -> dict:
     Use this to see what configuration a project needs."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         rows = (
             db.query(EnvironmentVariable)
             .filter(EnvironmentVariable.project_id == pid)
@@ -353,7 +385,7 @@ def get_environment_template(project_id: str | None = None) -> dict:
     (+ descriptions). Write it to the repo so teammates know what to configure."""
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, _ = _gate(db, project_id)
         rows = (
             db.query(EnvironmentVariable)
             .filter(EnvironmentVariable.project_id == pid)
@@ -379,45 +411,24 @@ def request_environment_value(
     user_id: str | None = None,
     project_id: str | None = None,
 ) -> dict:
-    """AUTHORIZED retrieval of ONE environment value for an agent's own runtime.
+    """AUTHORIZED retrieval of ONE environment value for the CALLER's runtime.
 
-    Flow: membership check (user_id must be an active member/agent of the
-    project) -> per-variable grant check -> server-side decrypt -> value.
-    Denied (403-shaped error result) without a grant; audited either way.
-    The value goes to the CALLING RUNTIME only — never to dashboards, logs,
-    events, or other agents.
+    Identity comes from the Bearer credential: a PAT caller gets values via
+    their REGISTERED AGENT's grants (register via POST /projects/:id/agents);
+    legacy user_id is ACCEPTED but IGNORED. Flow: membership check ->
+    per-variable grant check -> server-side decrypt -> value. Denied
+    (403-shaped error result) without a grant; audited either way. The value
+    goes to the CALLING RUNTIME only — never to dashboards, logs, events, or
+    other agents.
     """
-    from fastapi import HTTPException
-
     db = _db()
     try:
-        pid = _resolve_project_id(project_id)
+        pid, principal = _gate(db, project_id)
         project = db.get(Project, pid)
         if not project:
             raise ValueError("project not found")
-        requester_id: uuid.UUID | None = None
-        if user_id:
-            uid = uuid.UUID(user_id)
-            user = db.get(User, uid)
-            if not user or user.project_id != pid or user.membership_status == "removed":
-                raise ValueError("user_id is not an active member of this project")
-            requester_id = uid
-        else:
-            # No user_id: fall back to the single-agent convention ONLY when the
-            # project has exactly one registered agent — keeps the demo ergonomic
-            # without ever widening access beyond that one agent.
-            agents = (
-                db.query(User)
-                .filter(User.project_id == pid, User.kind == "agent", User.membership_status == "active")
-                .all()
-            )
-            if len(agents) == 1:
-                requester_id = agents[0].id
-            else:
-                raise ValueError(
-                    "user_id is required (register the agent via POST /projects/:id/agents "
-                    "and pass its users-row id)"
-                )
+        requester = auth_service.resolve_agent_for_request(db, pid, principal)
+        requester_id: uuid.UUID = requester.id
 
         var = (
             db.query(EnvironmentVariable)
@@ -428,7 +439,7 @@ def request_environment_value(
             return {"found": False, "key": key}
 
         try:
-            result = environment_service.request_secret(db, project, var, db.get(User, requester_id))
+            result = environment_service.request_secret(db, project, var, requester)
         except HTTPException as exc:
             if exc.status_code == 403:
                 return {"authorized": False, "key": key, "detail": exc.detail}
