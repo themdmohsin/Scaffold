@@ -56,7 +56,7 @@ GET    /projects
 GET    /projects/:id/invites
 DELETE /projects/:id/invites/:invite_id
 ```
-`POST /projects` now creates the project owned by the caller; `POST /projects/join` and `POST /projects/:id/invite` stay as-frozen but are JWT/admin-gated. **Every route and MCP tool requires `Authorization: Bearer <Supabase JWT or scaffold_ PAT>`; identity is never read from a body/query** (legacy `requesting_user_id`/`user_id` fields are accepted-but-ignored). 401 unauthenticated, 403 non-member/role too low, 503 when `SUPABASE_JWT_SECRET` is unset (fail closed).
+`POST /projects` now creates the project owned by the caller; `POST /projects/join` and `POST /projects/:id/invite` stay as-frozen but are JWT/admin-gated. **Every route and MCP tool requires `Authorization: Bearer <Supabase JWT or scaffold_… PAT>`; identity is never read from a body/query** (legacy `requesting_user_id`/`user_id` fields are accepted-but-ignored). Exceptions: `GET /health` (liveness) and `POST /projects/:id/github-webhook` (GitHub HMAC signature — GitHub cannot carry a user credential). 401 unauthenticated, 403 non-member/role too low, 503 when `SUPABASE_JWT_SECRET` is unset (fail closed).
 
 **MCP tool names** (`engine/app/mcp_server.py`) — the OpenCode plugin calls these verbatim, do not rename:
 ```
