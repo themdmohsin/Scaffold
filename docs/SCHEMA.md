@@ -359,8 +359,28 @@ CREATE INDEX idx_users_project_account     ON users(project_id, account_id) WHER
 -- invites added to the supabase_realtime publication (Team panel: who was invited / who joined)
 ```
 
+## Engine bookkeeping (Day 9 — NOT a product table)
+
+### schema_migrations
+| column | type | notes |
+| --- | --- | --- |
+| version | TEXT PK | zero-padded manifest version (`0001`…`0006`); ordering is lexical |
+| name | TEXT NOT NULL | human name (e.g. `phase6_auth`) |
+| checksum | TEXT NOT NULL | SHA-256 of the migration file at apply time; drift is reported, never re-run |
+| applied_at | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+| execution_ms | INTEGER NOT NULL DEFAULT 0 | |
+| skipped_statements | INTEGER NOT NULL DEFAULT 0 | tolerant migrations only; 0 on Supabase |
+
+Created and maintained by `engine/app/db/migrations.py` (the ordered, idempotent
+migration runner). Like Rails' `schema_migrations` / Alembic's `alembic_version`, this is
+ENGINE bookkeeping — not part of the frozen product schema, and not exposed by any route.
+Adopting an existing database replays the idempotent manifest as a no-op and records it
+(no renames, no drops, no data loss). All `schema.sql` DDL is `IF NOT EXISTS` so a fresh
+`psql -f schema.sql` and the runner agree. Full runbook: `docs/OPERATIONS.md` §6.
+
 ## Changelog (append-only after Day 1)
 
+- 2026-10-03 — Day 9 (deployment hardening, `day9-bf-deploy-hardening`): **no product-table changes** — additive engine bookkeeping only. `schema_migrations` (above) records the ordered migration manifest; the runner (`app/db/migrations.py`) replaces the ad-hoc `_apply_*_migration()` startup calls and is what `python -m app.scripts.migrate` / `bootstrap_db` drive. `engine/app/db/schema.sql` was made idempotent (`CREATE TABLE/INDEX IF NOT EXISTS`) so adopting a pre-runner database replays cleanly. No frozen table/column renamed, dropped, or retyped; all six existing migration files are unchanged in meaning (checksums frozen once applied).
 - 2026-09-23 — Day 1: all 10 tables frozen as specified in the build plan §1.
 - 2026-09-24 — Day 3: additive only — nullable `embedding VECTOR(1536)` on `decisions` + `api_contracts`, two HNSW cosine indexes, `tasks`/`decisions`/`events` added to the `supabase_realtime` publication. Applied by `engine/app/db/migrate_day3.sql` (auto at engine startup, idempotent).
 - 2026-09-29 — Phase 2 (Project Control Center, Developer A): `tasks.status` CHECK widened to add `'review'` (`'todo'|'in_progress'|'review'|'done'`) — existing values untouched, this is a widening, not a rename. Additive nullable/defaulted columns on `tasks`: `description TEXT`, `priority TEXT DEFAULT 'medium'` (CHECK `'low'|'medium'|'high'|'urgent'`), `blocked BOOLEAN DEFAULT false`, `created_by UUID → users(id)`, `completed_at TIMESTAMPTZ`. Four new supporting indexes (above). `blockers` and `task_dependencies` added to the `supabase_realtime` publication (dashboard live updates for the Blockers panel and dependency chips). Applied by `engine/app/db/migrate_phase2.sql` (auto at engine startup, idempotent, chained after `migrate_day3.sql`). No tables renamed or dropped; `task_dependencies` (already frozen Day 1, previously unused by any route) is now read/written by the task routes.

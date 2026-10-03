@@ -1,0 +1,15 @@
+# Secrets and local state — never into an image layer
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/
+*.db
+*.sqlite3
+.dockerignore
+Dockerfile

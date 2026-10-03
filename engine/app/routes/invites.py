@@ -161,14 +161,26 @@ def create_invite(
         invite = existing
         code = invite.code
     else:
-        code = make_code(project_id, ttl_seconds=ttl)
+        # The code is content-defined (`project_id.expiry.signature`), so two
+        # invites created for the same project in the same second with the same
+        # TTL produce the SAME code — and a revoked row from a moment earlier
+        # still occupies that code on the UNIQUE(code) index. Bump the expiry
+        # until the code is free (normally zero or one iteration).
+        ttl_used = ttl
+        for _ in range(10):
+            code = make_code(project_id, ttl_seconds=ttl_used)
+            if db.scalar(select(Invite.id).where(Invite.code == code)) is None:
+                break
+            ttl_used += 1
+        else:
+            raise HTTPException(status_code=409, detail="could not allocate a unique invite code; retry")
         invite = Invite(
             project_id=project_id,
             code=code,
             invited_by=principal.account_id,
             supabase_role=body.supabase_role,
             max_uses=body.max_uses,
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl),
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_used),
         )
         db.add(invite)
         db.flush()

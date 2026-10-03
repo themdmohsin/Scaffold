@@ -1,0 +1,33 @@
+# Fly.io deployment for the dashboard (optional — the engine is the critical
+# service). Deploy from this directory (dashboard/):
+#   fly launch --no-deploy --copy-config --name <your-dashboard-app-name> \
+#     --build-arg VITE_ENGINE_URL=https://<engine-app>.fly.dev \
+#     --build-arg VITE_SUPABASE_URL=https://<ref>.supabase.co \
+#     --build-arg VITE_SUPABASE_ANON_KEY=<anon-key>
+#   fly deploy
+# VITE_* values are baked at build time; changing them requires a new deploy.
+# (Vercel/Netlify also work — build with `npm run build` and publish dashboard/dist.)
+
+app = "scaffold-dashboard"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

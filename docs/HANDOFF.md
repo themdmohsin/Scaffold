@@ -1,4 +1,65 @@
 # HANDOFF
+## Current State — 2026-10-03 — Buffy (Day 9 DEPLOY HARDENING on branch `day9-bf-deploy-hardening` — NOT yet merged/pushed)
+
+**Goal:** make the engine deployable so teammates on different PCs share ONE engine (not
+localhost:8000). Deliverables, all on the branch and uncommitted at time of writing
+(committed in small pieces this session; nothing pushed):
+
+- **Container + one-command deploy** — `engine/Dockerfile` (python:3.12-slim, non-root
+  UID 1001, `/health` HEALTHCHECK, uvicorn without access log/server header),
+  `dashboard/Dockerfile` (node build → nginx-unprivileged), root `docker-compose.yml`
+  (engine :8000 + dashboard :8080, optional `local-db` profile = pgvector/pgvector:pg16
+  on :5433), `engine/fly.toml` (production env, TRUST_PROXY=1, `/health` check,
+  min 1 machine), `dashboard/fly.toml` + `nginx.conf`. `docker compose config` validates.
+- **Migration runner** — new `engine/app/db/migrations.py`: ordered manifest of the six
+  existing SQL files, recorded in a new `schema_migrations` bookkeeping table (version,
+  name, checksum, applied_at, execution_ms, skipped_statements). `python -m
+  app.scripts.migrate [--status|--check|--strict|--retry-skipped]` and from-zero
+  `python -m app.scripts.bootstrap_db [--lenient|--status]` (pgcrypto + vector extensions
+  with Supabase fix hints, migrations, Realtime publication repair, keyring verification).
+  `schema.sql` made fully idempotent (`IF NOT EXISTS`) so adopting an existing DB replays
+  as a no-op. Startup applies pending migrations fail-open; `/ready` reports pending.
+- **Config + safety** — central `validate_settings()` (dev = loud warnings, `SCAFFOLD_ENV=
+  production` = fatal with actionable messages); structured JSON logging with secret
+  redaction (PATs/Bearer/JWT/`password=`/DSN passwords; bodies+headers never logged);
+  `X-Request-Id` middleware + one access log line per request; deterministic in-process
+  rate limiting on auth/reason/secret scopes (429 + Retry-After + X-RateLimit-*);
+  tightened CORS expose-headers; new `GET /ready` readiness probe (DB + migrations, 503
+  until good — `/health` unchanged).
+- **Docs** — new `docs/DEPLOYMENT.md` (Fly.io recommended + Railway notes, full env table,
+  bootstrap, custom domain, GitHub webhook with the deployed URL) and `docs/OPERATIONS.md`
+  (backup/restore with a restore drill, secret-key rotation runbook, rate-limit caveats,
+  migration rules, incident runbook). AGENTS.md / SCHEMA.md / API_CONTRACTS.md updated
+  (additive only); all Day-9 env vars in `engine/.env.example`.
+
+**Bug found and fixed during from-zero verification:** two invites for the same project
+created in the same SECOND with the same TTL produced the SAME code
+(`project_id.expiry.signature` is content-defined), and a revoked row still occupies that
+code on `UNIQUE(code)` — the second `POST .../invite` 500'd. Supabase's network latency
+hid this; the fast local rig exposed it. The route now allocates a unique expiry until the
+code is free (tested same-second create + revoke-then-create, both green). Also removed the
+stray committed `webhook-test.txt`.
+
+**Verified on hardware this session:** from-zero on a throwaway Postgres 17.11 + pgvector
+0.8.1 rig (user-space, no admin — Docker Desktop cannot start on this machine: no
+WSL/hypervisor, `com.docker.service` Stopped, so the IMAGE BUILD COULD NOT BE RUN HERE —
+this is the one deliverable verified by config + rig rather than a container; `docker
+compose config` validates clean). `bootstrap_db --lenient` applied all 6 migrations from
+zero (only Supabase-only RLS/role statements skipped, by design), a second run reported
+`migrations already applied`, `migrate --status` shows no pending / no checksum drift.
+Full engine sweep green: **test_day2 31, test_day3 42, test_day4b 25, test_day5 76,
+test_phase2 46, test_phase3 41, test_phase4 125, test_phase5 91, test_auth 116** (+1
+legitimate Supabase-only RLS skip on plain PG), new **test_deploy 84/84**. Migration runner
+also applied cleanly to the live Supabase project earlier (all 6, 0 skips after
+`--retry-skipped`).
+
+**Next person should:** run `python -m app.scripts.bootstrap_db` against a fresh Supabase
+project, set the Fly secrets from `docs/DEPLOYMENT.md` §1, `fly deploy`, confirm `/ready`
+returns 200, then do the two-laptop pass (dashboard + plugin pointed at the deployed URL).
+If Docker Desktop gets fixed, run `docker compose up -d` and the image build once to close
+the one unverified deliverable.
+
+---
 ## Current State — 2026-10-03 — Buffy (Phase 6 REAL AUTHENTICATION MERGED to `main` via PR #13)
 
 Phase 6 (real authentication) landed on `main` via [PR #13](https://github.com/themdmohsin/Scaffold/pull/13)

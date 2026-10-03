@@ -1,0 +1,52 @@
+# Fly.io deployment — the RECOMMENDED shared-engine target (see docs/DEPLOYMENT.md).
+#
+# Deploy from this directory (engine/):
+#   fly launch --no-deploy --copy-config --name <your-unique-app-name>
+#   fly secrets set DATABASE_URL="postgresql://…" SUPABASE_URL="https://<ref>.supabase.co" \
+#     SUPABASE_JWT_SECRET="…" SUPABASE_SERVICE_KEY="…" SCAFFOLD_CORS_ORIGINS="https://<dashboard-domain>"
+#   fly deploy
+#
+# `fly launch` rewrites `app` below to the name you choose. Keep secrets in
+# `fly secrets` (never in this file or a committed .env).
+
+app = "scaffold-engine"
+primary_region = "iad" # https://fly.io/docs/reference/regions/
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Production turns startup config validation into hard failures with
+  # actionable messages (missing DATABASE_URL / JWT secret / CORS origins).
+  SCAFFOLD_ENV = "production"
+  SCAFFOLD_LOG_FORMAT = "json"
+  SCAFFOLD_LOG_LEVEL = "INFO"
+  # Fly's edge terminates TLS and sets X-Forwarded-For; trust it for rate-limit keys.
+  SCAFFOLD_TRUST_PROXY = "1"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Keep one machine warm so teammates' agents never pay a cold start; set
+  # min_machines_running = 0 to scale to zero (cheaper, slower first call).
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+# Liveness. Switch the path to /ready if you want the machine pulled out of
+# rotation while the DB/migrations are unhealthy.
+[[http_service.checks]]
+  interval = "15s"
+  timeout = "3s"
+  grace_period = "30s"
+  method = "GET"
+  path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
