@@ -1,1 +1,0 @@
-Scaffold GitHub webhook test
