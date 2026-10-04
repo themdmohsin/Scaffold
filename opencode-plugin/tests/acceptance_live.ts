@@ -70,6 +70,10 @@ console.log(
     reportsToasted: reported,
   })}`,
 )
+// Test seam for `acceptance_live.py --self-test`: die AFTER printing a result, which is how
+// Node crash-fails during teardown on Windows — the runner must still fail the run.
+if (process.env.SCAFFOLD_ACCEPTANCE_CRASH_AFTER_RESULT === "1") process.exit(93)
+
 // exitCode, not process.exit(): forcing an exit while undici's keep-alive sockets
 // are open crash-fails Node 24 on Windows (0xC0000409).
 process.exitCode = 0

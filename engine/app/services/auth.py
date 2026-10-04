@@ -55,6 +55,14 @@ MAX_TOKEN_LEN = 512
 current_mcp_principal: ContextVar["Principal | None"] = ContextVar(
     "current_mcp_principal", default=None
 )
+# Per-repo binding (Day 12): MCP clients MAY bind a project by sending the
+# `X-Scaffold-Project: <uuid>` header (the value from the repo's secret-free
+# .scaffold/project.json). Tool arguments still win when present; the frozen
+# SCAFFOLD_DEFAULT_PROJECT_ID fallback is unchanged. Set/reset by the same
+# ASGI gate in main.py; validated as a UUID before use.
+current_mcp_project: ContextVar["str | None"] = ContextVar(
+    "current_mcp_project", default=None
+)
 
 
 class AuthUnavailable(RuntimeError):

@@ -34,6 +34,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { SCAFFOLD_MCP_NAME, scaffoldMcpEntry, withScaffoldEntry, type McpConfigMap } from "./scaffold"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -493,7 +494,12 @@ const layer = Layer.effect(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        // Day 12: per-repo binding registers the Scaffold engine as a real MCP
+        // server (credential stays in-process; user config always wins).
+        const config = withScaffoldEntry(
+          cfg.mcp as McpConfigMap | undefined,
+          yield* InstanceState.directory,
+        )
         const s: State = {
           config: {},
           status: {},
@@ -592,7 +598,7 @@ const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
 
       const cfg = yield* cfgSvc.get()
-      const config = cfg.mcp ?? {}
+      const config = withScaffoldEntry(cfg.mcp as McpConfigMap | undefined, yield* InstanceState.directory)
       const result: Record<string, Status> = {}
 
       for (const [key, mcp] of Object.entries(config)) {
@@ -797,8 +803,14 @@ const layer = Layer.effect(
       return mcpConfig
     })
 
+    /** Derived Scaffold entry (not persisted anywhere) for connect/supportsOAuth paths. */
+    const scaffoldConfig = Effect.fnUntraced(function* (mcpName: string) {
+      if (mcpName !== SCAFFOLD_MCP_NAME) return undefined
+      return scaffoldMcpEntry(yield* InstanceState.directory)?.config
+    })
+
     const requireMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
-      const mcpConfig = yield* getMcpConfig(mcpName)
+      const mcpConfig = (yield* getMcpConfig(mcpName)) ?? (yield* scaffoldConfig(mcpName))
       if (!mcpConfig) return yield* new NotFoundError({ name: mcpName })
       return mcpConfig
     })

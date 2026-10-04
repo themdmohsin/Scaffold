@@ -28,13 +28,14 @@ import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
+import { InitCommand, LinkCommand } from "./cli/cmd/scaffold"
 import { Heap } from "./cli/heap"
 
 const args = hideBin(process.argv)
 
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("opencode ")) {
+  if (!text.startsWith("scaffold ")) {
     process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text + EOL)
     return
@@ -44,7 +45,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName("scaffold")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
@@ -76,10 +77,12 @@ const cli = yargs(args)
     process.env.OPENCODE = "1"
     process.env.OPENCODE_PID = String(process.pid)
   })
-  .usage("")
+  .usage("Scaffold â€” live shared project context for coding agents\n\nUsage: scaffold <command> [options]")
   .completion("completion", "generate shell completion script")
   .command(AcpCommand)
   .command(McpCommand)
+  .command(InitCommand)
+  .command(LinkCommand)
   .command(TuiThreadCommand)
   .command(AttachCommand)
   .command(RunCommand)
