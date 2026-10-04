@@ -1,4 +1,41 @@
 # HANDOFF
+
+## 2026-10-04 — Playwright smoke RUN against the live stack (branch `day11-bf-team-dashboard`, commit 9022d10)
+
+The one open verification item from the Phase 6.5 entry is CLOSED. Ran the real browser suite against the live local stack (engine already up on :8000 — /ready green incl. migration 0007; dashboard dev server started detached on :5173 via `npm run dev`, log at dashboard/dashboard-dev.log). Chromium installed via `npx playwright install chromium`. Test user created fresh through the real Supabase Auth signup (email confirmation OFF on this project) and verified engine-side: `GET /auth/me` → 200 with a new account id, 0 memberships.
+
+`E2E_EMAIL=… E2E_PASSWORD=… npx playwright test --project=chromium` → **3 passed (55.2s)**:
+1. `auth gate → sign in → create project wizard shows connect instructions` — 8.2s (gate blocks signed-out users; UI sign-in; wizard lands on the connect-your-client step)
+2. `deep links + refresh survive on every project route` — 13.2s (API-created project; direct `goto` + `reload` on /projects/:id/overview, /tasks, /team, /environment — all render their markers after BOTH navigation and F5)
+3. `invite deep link /join/:code lands inside the returned project` — 8.8s (API-created project + admin invite; `goto /join/<code>` → join → lands on `/projects/<pid>/overview`, refresh holds)
+
+Post-run re-verification: `npm test` 9/9, `npm run build` clean. One real (small) bug the smoke exposed and fixed: the sign-in inputs were placeholder-only with no accessible name (audit item "labels missing" survived on the Login screen because it predates the rewrite) — added `aria-label` to email/password; no other code changes, no feature changes.
+
+Housekeeping: `dashboard/.gitignore` now covers dashboard-dev.log / test-results / playwright-report. The engine on :8000 was NOT started by me (pre-existing); the :5173 dev server WAS started by me and is still running — stop it with `taskkill /PID <pid>` or just close the terminal if restarting later. E2E credentials are passed inline per run (never committed); `dashboard/e2e/probe-user.mjs` creates/verifies the user (sign-in first, signup fallback).
+
+Nothing pushed. Next person: the only remaining unverified leg for this phase is a manual GitHub OAuth round-trip (needs the GitHub provider enabled in Supabase Auth); everything else is now proven live.
+
+---
+
+
+## 2026-10-04 — Dashboard is now a real team app (branch `day11-bf-team-dashboard` — NOT yet merged/pushed)
+
+The one-page demo is gone. React Router (`/projects`, `/projects/:id/{overview,tasks,team,environment,decisions,contracts,activity,settings}`, `/join/:code`) with a left nav; deep links + F5 work (nginx SPA fallback was already in place). React Query data layer: per-panel loading/error states (one failed request no longer blanks the app), 15s request timeouts with cancel signals, retries that skip 4xx, optimistic task moves with rollback, realtime→invalidation with a 600ms storm-coalescing window. Toasts + a ConfirmDialog replace every `alert()`/`confirm()`. Light/dark theme (CSS variables, `data-theme` on html, localStorage + prefers-color-scheme). Production builds REQUIRE `VITE_ENGINE_URL` — `src/config.ts` throws at boot instead of silently defaulting to localhost (dev still warns + defaults).
+
+**Audit defects fixed:** pasted-UUID landing → real project list from `GET /projects`; create-project wizard (name/goal/deadline/optional GitHub repo) that shows the project ID + the exact connect-your-client env (`SCAFFOLD_ENGINE_URL`, `SCAFFOLD_TOKEN` PAT) and command; `/join/:code` top-level route that HONORS the join response's `project_id` and navigates straight into the project; invite links copyable from the Team page (pending-invites list with redemption trail + revoke, admin-gated); NextActions accept no longer disabled when exactly one task is ready (claims under the signed-in user's `is_me` roster row — acting-as selectors removed everywhere); due-date editing in the task dialog; DONE tasks no longer wrap to TODO (advance button simply absent); task drawer is a real `<dialog>` (native Escape, backdrop, aria); nested interactive controls on cards removed (title button + advance button are siblings); tables in `.table-wrap` (mobile overflow-x); labels/htmlFor/aria-labels added; Environment page auto-loads; PAT management on the projects page (shown-once reveal + revoke).
+
+**Engine changes (all additive, docs updated):** `PATCH .../tasks/:task_id` accepts `due_at` (frozen Day-1 column, previously create-only; same Optional-without-clear semantics as `owner_id`) + new `task_due_changed` event; `POST/GET /projects` carry optional `github_repo` (migration 0007 `migrate_dashboard_team.sql`, `projects.github_repo TEXT NULL`; verified applied live, `migrate --status` clean). No renames, no frozen shape changed, no new env vars.
+
+**Secrets guarantee held:** Environment page renders status words only; values are write-only inputs (type=password, never read back); template download is KEY= lines by engine construction; the dashboard never calls `/environment/request` or `/pull` (agent-runtime transports only).
+
+**Verified this session:** `cd dashboard && npm run build` clean (tsc+vite); new `cd dashboard && npm test` — 9/9 (auth gate sign-out/sign-in/deep-link, create-project wizard → connect instructions, invite join honoring project_id, optimistic task move PATCH, DONE-no-wrap, due-date PATCH, single-ready-task Accept enabled and POSTing `user_id` of the is_me member); prod-build fail-loud probe (empty VITE_ENGINE_URL build contains the throw + no silent localhost); engine harnesses on the live DB: test_phase2 46/46, test_day2 31/31, test_auth 135/135, test_deploy 85/85 (new migration registered), `migrate --status` shows 0007 applied + none pending. Playwright smoke added (config + spec) but NOT executed here — needs `npx playwright install` + a live stack with E2E_EMAIL/E2E_PASSWORD (skips loudly without them, per config).
+
+**Still open / next person:** run the Playwright smoke once against a live engine+Supabase; interactive GitHub OAuth round-trip was not exercised in tests (unit-mocked) — worth one manual pass; bundle is ~593 kB (no code splitting yet — lazy-route the project pages if it matters); the wizard's connect step shows `SCAFFOLD_PROJECT_ID` which the plugin doesn't read yet (plugin uses `SCAFFOLD_DEFAULT_PROJECT_ID` engine-side) — align names in the plugin thread before advertising it. Environment "request" flow is intentionally dashboard-absent (values are runtime-only) — if the owner wants an in-app access-request queue, that's a NEW additive engine route (needs approval).
+
+**Commits on the branch:** 086fc01 (team app shell + engine additive), 14f483c (test suite), plus this docs commit. Do NOT push/merge without the owner.
+
+---
+
 ## 2026-10-03 - JWKS verification for Supabase ES256 JWTs
 engine/app/services/jwks.py (new cache: kid-selected, TTL 600s, unknown-kid refresh with 30s cooldown, stale-ok 24h, fail closed), auth.py _verify_jwt split into ES256/RS256 (JWKS) vs HS256 (SUPABASE_JWT_SECRET, legacy) paths with alg pinned per path. SUPABASE_URL is now the only required var for asymmetric projects. New harness: python -m tests.test_jwks (51). NOT verified: a real browser login.
 ## 2026-10-03 - Final verification pass: dashboard auth UI (branch `day10-final-dashboard-auth`)

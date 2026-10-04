@@ -13,6 +13,19 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+// Parse the Supabase redirect fragment once: after an OAuth round-trip Supabase
+// returns the session in `#access_token=...` (and error codes in
+// `?error=...`). detectSessionInUrl consumes the success case; surfacing the
+// error codes is on us.
+export function oauthErrorFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const err = params.get("error_description") ?? params.get("error");
+  if (!err) return null;
+  // Clean the address bar so a refresh doesn't re-show it.
+  window.history.replaceState({}, "", window.location.pathname);
+  return err;
+}
+
 const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
 const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim();
 

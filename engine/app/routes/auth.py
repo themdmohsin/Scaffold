@@ -199,6 +199,8 @@ def list_my_projects(
                 "created_at": p.created_at.isoformat(),
                 "supabase_role": m.supabase_role,
                 "joined_at": _iso(m.joined_at),
+                # Phase 6.5 additive — may be absent on rows created before the migration.
+                "github_repo": getattr(p, "github_repo", None),
             }
             for p, m in rows
         ]
@@ -209,6 +211,8 @@ class ProjectCreateAuthed(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     goal: str | None = Field(default=None, max_length=2000)
     deadline: datetime | None = None
+    # Phase 6.5 additive: optional GitHub repo link ("owner/repo"), display metadata only.
+    github_repo: str | None = Field(default=None, max_length=200)
     # Legacy compat: accepted, ignored — the caller IS the owner (requirement 6).
     requesting_user_id: uuid.UUID | None = None
 
@@ -226,7 +230,7 @@ def create_project(
     if existing:
         raise HTTPException(status_code=409, detail="project with this name already exists")
 
-    project = Project(name=body.name, goal=body.goal, deadline=body.deadline)
+    project = Project(name=body.name, goal=body.goal, deadline=body.deadline, github_repo=body.github_repo)
     db.add(project)
     db.flush()
     member = ProjectMember(
@@ -252,4 +256,6 @@ def create_project(
         "deadline": project.deadline.isoformat() if project.deadline else None,
         "created_at": project.created_at.isoformat(),
         "owner_user_id": str(user.id),
+        # Phase 6.5 additive.
+        "github_repo": project.github_repo,
     }

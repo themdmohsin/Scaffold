@@ -35,6 +35,9 @@ class Project(Base):
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id")
     )
+    # Phase 6.5 (dashboard team app) addition — optional "owner/repo" display
+    # link; additive, see migrate_dashboard_team.sql.
+    github_repo: Mapped[str | None] = mapped_column(Text)
 
 
 class User(Base):
