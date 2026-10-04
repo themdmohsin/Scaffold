@@ -7,6 +7,13 @@ Day 4 Part B: POST also runs deterministic conflict detection (rule #3) against
 the project's registered contracts BEFORE inserting, recording conflict_flagged
 events + blockers and scheduling the auto-GitHub-issue on a hit. Registration
 still succeeds (201) — detection is a safety net, not a blocker.
+
+Day 12 (client fork): POST /projects/:id/contracts/check — a read-only,
+stateless pre-write check. The client fork sends the routes it is ABOUT to
+write (extracted locally with the same deterministic regexes as diff_parser);
+the engine compares them against registered contracts with the exact same
+conflict_service used at registration time. Nothing is stored, no event is
+written — the caller decides whether to warn or block.
 """
 
 import uuid
@@ -18,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApiContract, Event, Project, Task
 from app.db.session import get_db
-from app.services import conflict_service, retrieval
+from app.services import conflict_service, contract_check, retrieval
 from app.services.auth import Principal, require_member, require_principal
 from app.services.conflict_recorder import record_conflicts
 
@@ -31,6 +38,31 @@ class ContractCreate(BaseModel):
     request_schema: dict | None = None
     response_schema: dict | None = None
     created_by_task_id: uuid.UUID | None = None
+
+
+class RouteHint(BaseModel):
+    """One route a client is about to write (extracted client-side, never
+    source text — repo rule #4 keeps file contents on the developer's machine)."""
+
+    route: str = Field(min_length=1)
+    method: str = Field(min_length=1, pattern="^[A-Za-z]+$")
+    file: str | None = None
+    request_schema: dict | None = None
+    response_schema: dict | None = None
+
+
+class ContractCheck(BaseModel):
+    """Pre-write check body. All inputs optional; `routes` is the normal path
+    for the client fork (local deterministic extraction), `content`/`diff` let
+    HTTP callers hand raw text to the engine's own parser for the check only —
+    it is never persisted, embedded, or logged."""
+
+    file: str | None = None
+    routes: list[RouteHint] | None = None
+    content: str | None = Field(default=None, max_length=500_000)
+    diff: str | None = Field(default=None, max_length=1_000_000)
+    request_schema: dict | None = None
+    response_schema: dict | None = None
 
 
 def _out(c: ApiContract) -> dict:
@@ -120,3 +152,33 @@ def create_contract(
     if findings:  # additive response key (changelog-noted) so callers see the hit
         out["conflicts"] = conflict_summary
     return out
+
+
+@router.post("/check")
+def check_contracts(
+    project_id: uuid.UUID,
+    body: ContractCheck,
+    principal: Principal = Depends(require_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Deterministic PRE-WRITE check (Day 12, client fork).
+
+    Answers "would this write collide with a registered contract?" without
+    writing anything. The client fork calls this from tool.execute.before with
+    the routes it is about to introduce; a `conflict` severity lets the fork
+    block the write with the registered shape in the message. Warnings are
+    advisory. Same pure detector as registration — no LLM, no heuristics, no
+    state change (repo rule #3).
+
+    The same implementation backs the MCP tool check_api_contracts(...) — see
+    services/contract_check.py."""
+    require_member(db, project_id, principal)
+    incoming = contract_check.build_incoming(
+        file=body.file,
+        routes=[hint.model_dump() for hint in body.routes] if body.routes else None,
+        content=body.content,
+        diff=body.diff,
+        request_schema=body.request_schema,
+        response_schema=body.response_schema,
+    )
+    return contract_check.run_check(db, project_id, incoming)

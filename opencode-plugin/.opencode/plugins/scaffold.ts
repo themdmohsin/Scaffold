@@ -35,11 +35,73 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import fs from "node:fs"
+import path from "node:path"
 
-const ENGINE_URL = (process.env.SCAFFOLD_ENGINE_URL ?? "http://localhost:8000").replace(/\/+$/, "")
+/**
+ * PORTABLE COPY — the same plugin ships built into the fork
+ * (opencode/packages/opencode/src/plugin/scaffold). This file exists for
+ * upstream-OpenCode compatibility and for the repo's plugin harnesses. A
+ * duplicate guard below disables whichever copy loads second.
+ */
+const DUPLICATE_MARKER = Symbol.for("scaffold.client.plugin.instance")
+
+const ENV_ENGINE_URL = (process.env.SCAFFOLD_ENGINE_URL ?? "").replace(/\/+$/, "")
 // Phase 6 real auth: PAT credential for the engine (Authorization: Bearer).
-const ENGINE_TOKEN = process.env.SCAFFOLD_TOKEN ?? ""
-const MCP_URL = `${ENGINE_URL}/mcp`
+const ENV_TOKEN = process.env.SCAFFOLD_TOKEN ?? ""
+
+// --- per-repo binding (Day 12): .scaffold/project.json, secret-free ---------
+type RepoBinding = { project_id: string; engine_url: string; dashboard_url?: string }
+
+function readRepoBinding(root: string): RepoBinding | null {
+  if (!root) return null
+  try {
+    const file = path.join(root, ".scaffold", "project.json")
+    if (!fs.existsSync(file)) return null
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"))
+    if (!raw || typeof raw.project_id !== "string" || typeof raw.engine_url !== "string") return null
+    return {
+      project_id: raw.project_id,
+      engine_url: raw.engine_url.replace(/\/+$/, ""),
+      dashboard_url: typeof raw.dashboard_url === "string" ? raw.dashboard_url : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** OS-level credential store — never the repo. SCAFFOLD_TOKEN wins. */
+function readStoredToken(engineUrl: string, root: string): string {
+  if (ENV_TOKEN) return ENV_TOKEN
+  try {
+    const override = process.env.SCAFFOLD_CONFIG_DIR
+    const base =
+      override ??
+      (process.platform === "win32"
+        ? path.join(process.env.APPDATA ?? path.join(root || ".", "AppData", "Roaming"))
+        : path.join(process.env.XDG_CONFIG_HOME ?? path.join(process.env.HOME ?? root, ".config")))
+    const file = path.join(base, "scaffold", "credentials.json")
+    if (!fs.existsSync(file)) return ""
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"))
+    const token = raw?.tokens?.[engineUrl]
+    return typeof token === "string" ? token.trim() : ""
+  } catch {
+    return ""
+  }
+}
+
+function resolveBinding(root: string, directory: string) {
+  const binding = readRepoBinding(root) ?? readRepoBinding(directory)
+  const engineUrl = (ENV_ENGINE_URL || binding?.engine_url || "http://localhost:8000").replace(/\/+$/, "")
+  const projectId = process.env.SCAFFOLD_PROJECT_ID?.trim() || binding?.project_id || ""
+  const token = binding ? readStoredToken(engineUrl, root || directory) : ENV_TOKEN
+  return { binding, engineUrl, projectId, token }
+}
+
+let ENGINE_URL = (ENV_ENGINE_URL || "http://localhost:8000").replace(/\/+$/, "")
+let ENGINE_TOKEN = ENV_TOKEN
+let PROJECT_ID = ""
+let MCP_URL = `${ENGINE_URL}/mcp`
 
 const MCP_PROTOCOL_VERSION = "2025-06-18"
 const CLIENT_INFO = { name: "scaffold-opencode-plugin", version: "0.5.0" }
@@ -100,6 +162,27 @@ class ScaffoldMcp {
     this.url = url
   }
 
+  /** Terminate the MCP session on plugin dispose. Best-effort, never throws. */
+  async close(): Promise<void> {
+    if (!this.sessionId) return
+    const sessionId = this.sessionId
+    this.sessionId = null
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), MCP_TIMEOUT_MS)
+      const headers: Record<string, string> = { "mcp-session-id": sessionId }
+      if (ENGINE_TOKEN) headers["authorization"] = `Bearer ${ENGINE_TOKEN}`
+      if (PROJECT_ID) headers["x-scaffold-project"] = PROJECT_ID
+      try {
+        await fetch(this.url, { method: "DELETE", headers, signal: controller.signal })
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch {
+      /* dispose must never throw */
+    }
+  }
+
   async callTool(name: string, args: Record<string, unknown>): Promise<any> {
     await this.ensureSession()
     let message: JsonRpcMessage
@@ -157,6 +240,8 @@ class ScaffoldMcp {
     // Phase 6: every MCP call carries the PAT — identity/membership is resolved
     // from it server-side. Absent token ⇒ the engine 401s (fail closed).
     if (ENGINE_TOKEN) headers["authorization"] = `Bearer ${ENGINE_TOKEN}`
+    // Day 12: the repo's bound project (frozen tool args stay untouched).
+    if (PROJECT_ID) headers["x-scaffold-project"] = PROJECT_ID
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), MCP_TIMEOUT_MS)
@@ -455,6 +540,21 @@ type SessionState = {
 
 export const ScaffoldPlugin: Plugin = async ({ project, client, directory, worktree }) => {
   const root = worktree || directory || ""
+
+  // Duplicate guard: the fork ships this plugin built-in; when both are
+  // present the second loader is disabled (fail open, warn, no hooks).
+  const registry = globalThis as Record<PropertyKey, unknown>
+  if (registry[DUPLICATE_MARKER]) {
+    console.warn("[scaffold] duplicate plugin detected — the built-in Scaffold plugin is active; disabling this copy")
+    return {}
+  }
+  registry[DUPLICATE_MARKER] = { root, at: Date.now() }
+
+  const resolved = resolveBinding(root, directory || "")
+  ENGINE_URL = resolved.engineUrl
+  ENGINE_TOKEN = resolved.token
+  PROJECT_ID = resolved.projectId
+  MCP_URL = `${ENGINE_URL}/mcp`
   const mcp = new ScaffoldMcp(MCP_URL)
 
   let contextCache: { at: number; value: any } | null = null
@@ -583,6 +683,8 @@ export const ScaffoldPlugin: Plugin = async ({ project, client, directory, workt
 
   await log("info", `plugin loaded — engine=${ENGINE_URL} mcp=${MCP_URL} dir=${root || directory}`, {
     project: (project as { id?: string } | undefined)?.id ?? null,
+    scaffoldProject: PROJECT_ID || null,
+    binding: resolved.binding ? "yes" : "no",
   })
 
   return {
@@ -755,7 +857,22 @@ export const ScaffoldPlugin: Plugin = async ({ project, client, directory, workt
     "shell.env": async (input: { cwd?: string }, output: { env: Record<string, string> }) => {
       output.env.SCAFFOLD_ENGINE_URL = ENGINE_URL
       output.env.SCAFFOLD_PROJECT_DIR = input?.cwd ?? root
+      if (PROJECT_ID) output.env.SCAFFOLD_PROJECT_ID = PROJECT_ID
       if (ENGINE_TOKEN) output.env.SCAFFOLD_TOKEN = ENGINE_TOKEN
+    },
+
+    // Dispose: close the MCP session and release the duplicate guard.
+    dispose: async () => {
+      try {
+        await mcp.close()
+      } catch {
+        /* fail open */
+      }
+      try {
+        delete registry[DUPLICATE_MARKER]
+      } catch {
+        /* fail open */
+      }
     },
   }
 }

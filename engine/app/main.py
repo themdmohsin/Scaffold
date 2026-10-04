@@ -9,6 +9,7 @@ ordered migration runner (app/db/migrations.py).
 """
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -118,11 +119,27 @@ class _McpAuth:
             await deny(401, "invalid credential")
             return
 
+        # Day 12 per-repo binding: an optional project header (from the repo's
+        # .scaffold/project.json) scopes default tool resolution to that project.
+        # Invalid values are ignored (tools still fall back to the frozen
+        # SCAFFOLD_DEFAULT_PROJECT_ID convention) — never a request failure.
+        bound_project = (headers.get("x-scaffold-project") or "").strip()
+        project_token = None
+        if bound_project:
+            try:
+                uuid.UUID(bound_project)
+            except (ValueError, AttributeError, TypeError):
+                bound_project = ""
+        if bound_project:
+            project_token = auth_service.current_mcp_project.set(bound_project)
+
         token = auth_service.current_mcp_principal.set(principal)
         try:
             await self.app(scope, receive, send)
         finally:
             auth_service.current_mcp_principal.reset(token)
+            if project_token is not None:
+                auth_service.current_mcp_project.reset(project_token)
 
 
 class _StubRequest:

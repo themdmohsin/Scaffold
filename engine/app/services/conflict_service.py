@@ -68,6 +68,13 @@ def _normalize_path(route: str) -> str:
     return path
 
 
+def normalize_route(route: str) -> str:
+    """Public alias of the path normalization used by every comparison below
+    (Day 12: lets the pre-write check classify route matches with the exact same
+    rules the registration path uses)."""
+    return _normalize_path(route)
+
+
 def _prefix(route: str, segments: int = 2) -> str:
     """First N path segments — the 'feature area' (e.g. /api/auth)."""
     parts = _normalize_path(route).split("/")

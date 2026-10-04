@@ -27,22 +27,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from engine_fixture import FixtureEngine, check, report, run_driver  # noqa: E402
+from engine_fixture import FAIL, FixtureEngine, check, report, run_driver  # noqa: E402
 
 DRIVER = Path(__file__).resolve().with_name("acceptance_live.ts")
 
 
-def run(url: str, label: str) -> None:
+def run(url: str, label: str, *, crash_after_result: bool = False) -> None:
     print(f"\n== {label}: {url} ==")
-    driver, proc = run_driver(DRIVER, url)
+    env_extra = {"SCAFFOLD_ACCEPTANCE_CRASH_AFTER_RESULT": "1"} if crash_after_result else None
+    driver, proc = run_driver(DRIVER, url, env_extra=env_extra)
 
     # The block is the artifact a human needs to see, injected or not (plus why, if not).
     print(proc.stdout.rstrip())
     if proc.stderr.strip():
         print(proc.stderr.rstrip())
 
+    # A crashed driver must fail the run even if it managed to print a __RESULT__ line
+    # before dying (Node can crash-fail during teardown on Windows).
+    check(f"{label}: driver exited cleanly", proc.returncode == 0, f"exit {proc.returncode}")
     if driver is None:
-        check(f"{label}: driver produced a result", False, f"exit {proc.returncode}")
+        check(f"{label}: driver produced a result", False, f"driver crashed, exit {proc.returncode}")
         return
 
     check(f"{label}: engine answered and context was injected", driver["blockChars"] > 0, "; ".join(driver["warnings"]))
@@ -62,6 +66,20 @@ if args.self_test:
     with FixtureEngine() as engine:
         run(engine.url, "self-test (fixture engine)")
         check("self-test: the fixture actually injected a block", len(engine.calls) > 0, str(engine.calls))
+
+    # The runner must REJECT a driver that dies — even one that printed a result first, which
+    # is exactly how Node crash-fails during teardown on Windows. The FAIL lines below are the
+    # point; they are pulled back out of the tally so this leg passing does not fail the command.
+    print("\n== self-test: a driver that crashes must be reported as a failure ==")
+    before = len(FAIL)
+    run("http://127.0.0.1:1", "self-test (driver dies after printing a result)", crash_after_result=True)
+    detected = FAIL[before:]
+    del FAIL[before:]
+    check(
+        "self-test: the runner rejected the crashed driver",
+        bool(detected),
+        "the runner accepted a driver that died (no failure was recorded for exit != 0)",
+    )
 else:
     if not os.environ.get("SCAFFOLD_TOKEN"):
         print(

@@ -1914,3 +1914,36 @@ thinking-token truncation).
 Next pair should start with: on a machine with engine/.env, run `python -m tests.test_day5`
 end to end (route legs included), then the two-laptop pass.
 
+
+---
+
+## Day 12 / Prompt 4 - visible Scaffold client (branch day12-bf-visible-scaffold-client; NOT committed/pushed)
+
+Built (two sessions): `.scaffold/project.json` binding + OS-config credentials (`docs/SCAFFOLD_BINDING.md`,
+`scaffold init|link`); built-in plugin (`opencode/packages/opencode/src/plugin/scaffold/`) with duplicate guard +
+dispose; derived authenticated MCP entry (`src/mcp/scaffold.ts`); TUI sidebar + slash commands /scaffold /tasks /next
+/team /conflicts /dashboard /env (`packages/tui/src/feature-plugins/scaffold`); pre-write contract enforcement
+(`engine/app/services/contract_check.py`, `POST /projects/:id/contracts/check`, MCP contract tool, chat/system
+transform + `tool.execute.before`); rebrand (binary `scaffold`, upgrade disabled), NOTICE; harness fixes
+(acceptance runner fails on driver crash, Headers.entries, mcp_sdk_interop exit code).
+This session fixed: TUI /next + accept read the wrong recommendation shape (engine returns `recommendation.task.{id,title}`);
+/env title read summary at the wrong level; false "duplicate plugin" warning when the built-in plugin re-initialises in the
+same process (marker now carries source=builtin); non-ASCII mojibake in new files; added NOTICE + binding doc.
+
+Tests actually run: verify_plugin 63/63; mcp_sdk_interop 17/17 (exit 0); acceptance_live --self-test 7/7 (its printed FAIL
+lines are the intentional crashed-driver scenario the runner must reject); acceptance_live live 4/4; plugin `npm run typecheck`
+0 errors; fork tsc 0 errors in scaffold files; engine: test_client_fork 35/0, test_day2 31/0, test_auth 135/0, test_phase4 125/0,
+test_jwks 51/0, test_day4b 25/0, test_deploy 84 pass / 1 FAIL (migration 0007 checksum drift vs the already-applied DB row;
+migration files are unmodified in git - pre-existing, unrelated).
+
+Real E2E (scratch repo outside the project, real fork `bun run src/index.ts`, free `opencode/big-pickle` model, live engine):
+init wrote secret-free project.json + token in ~/.config/scaffold; `serve` -> GET /mcp = scaffold connected; `run` session:
+plugin loaded once (project/engine from binding), context attached, model called `scaffold_get_active_tasks` and quoted both
+task titles; write of a conflicting-route app.py: contract pinned into request and write-time check logged "already
+registered: POST /api/auth/login" (WARN only - code schema not comparable, file still written); duplicate copy in
+.opencode/plugins disabled with one warning; engine stopped -> session still answered, offline warning only.
+NOT tested interactively: the TUI itself (no TTY/pty available) - sidebar rendering and slash-command dialogs are verified only
+by typecheck + by exercising the exact engine endpoints/shapes they consume (context, coordination, members, recommendations/next,
+accept-recommendation, environment). /dashboard open and the hard BLOCK path of enforcement are covered by verify_plugin only.
+Gotcha: a stale SCAFFOLD_ENGINE_URL in the shell overrides the binding (documented).
+Next: drive the TUI in a real terminal once (sidebar + each slash command), then commit.

@@ -7,7 +7,11 @@ import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
 import { makeGlobalNode } from "./effect/app-node"
 
-const app = "opencode"
+// Scaffold rebrand (Day 12): the fork owns its own OS-level directories
+// (~/.config/scaffold, ~/.local/share/scaffold, …) so Scaffold credentials and
+// state never mix with an upstream OpenCode install. OPENCODE_* env overrides
+// keep working.
+const app = "scaffold"
 const data = path.join(xdgData!, app)
 const cache = path.join(xdgCache!, app)
 const config = path.join(xdgConfig!, app)

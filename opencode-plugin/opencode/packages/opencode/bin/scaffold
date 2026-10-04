@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+
+/**
+ * Scaffold launcher (fork rebrand).
+ *
+ * Differences from the upstream launcher this replaces:
+ *  - resolves the local Scaffold build (OPENCODE_BIN_PATH / cached `.scaffold`
+ *    artifact / `bun run src/index.ts`), NEVER an `opencode-<platform>` npm
+ *    package — so a Scaffold install can never execute upstream OpenCode;
+ *  - error text says scaffold.
+ */
+
+const childProcess = require("child_process")
+const fs = require("fs")
+const path = require("path")
+
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
+
+function run(target, args) {
+  const child = childProcess.spawn(target, args, {
+    stdio: "inherit",
+  })
+
+  child.on("error", (error) => {
+    console.error(error.message)
+    process.exit(1)
+  })
+
+  const forwarders = {}
+  for (const signal of forwardedSignals) {
+    forwarders[signal] = () => {
+      try {
+        child.kill(signal)
+      } catch {
+        // The child may have already exited.
+      }
+    }
+    process.on(signal, forwarders[signal])
+  }
+
+  child.on("exit", (code, signal) => {
+    for (const forwardedSignal of forwardedSignals) {
+      process.removeListener(forwardedSignal, forwarders[forwardedSignal])
+    }
+
+    if (signal) {
+      process.kill(process.pid, signal)
+      return
+    }
+
+    process.exit(typeof code === "number" ? code : 0)
+  })
+}
+
+const scriptPath = fs.realpathSync(__filename)
+const scriptDir = path.dirname(scriptPath)
+const args = process.argv.slice(2)
+
+const envPath = process.env.OPENCODE_BIN_PATH
+const cached = path.join(scriptDir, ".scaffold")
+const sourceEntry = path.join(scriptDir, "..", "src", "index.ts")
+
+if (envPath) {
+  run(envPath, args)
+} else if (fs.existsSync(cached)) {
+  run(cached, args)
+} else if (fs.existsSync(sourceEntry)) {
+  const bun = process.platform === "win32" ? "bun.exe" : "bun"
+  run(bun, ["run", sourceEntry, ...args])
+} else {
+  console.error(
+    "Scaffold is not built here. Run it from the Scaffold repository with `bun run --cwd packages/opencode src/index.ts`, " +
+      "or set OPENCODE_BIN_PATH to a Scaffold build. Upstream OpenCode binaries are never used by the Scaffold client.",
+  )
+  process.exit(1)
+}

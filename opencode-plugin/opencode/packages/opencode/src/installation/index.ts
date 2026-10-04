@@ -263,61 +263,20 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         return data.tag_name.replace(/^v/, "")
       }, Effect.orDie),
       upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
-        let upgradeResult: { code: number; stdout: string; stderr: string } | undefined
-        switch (m) {
-          case "curl":
-            upgradeResult = yield* upgradeCurl(target)
-            break
-          case "npm":
-            upgradeResult = yield* run(["npm", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "pnpm":
-            upgradeResult = yield* run(["pnpm", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "bun":
-            upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "brew": {
-            const formula = yield* getBrewFormula()
-            const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
-            if (formula.includes("/")) {
-              const tap = yield* run(["brew", "tap", "anomalyco/tap"], { env })
-              if (tap.code !== 0) {
-                upgradeResult = tap
-                break
-              }
-              const repo = yield* text(["brew", "--repo", "anomalyco/tap"])
-              const dir = repo.trim()
-              if (dir) {
-                const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
-                if (pull.code !== 0) {
-                  upgradeResult = pull
-                  break
-                }
-              }
-            }
-            upgradeResult = yield* run(["brew", "upgrade", formula], { env })
-            break
-          }
-          case "choco":
-            upgradeResult = yield* run(["choco", "upgrade", "opencode", `--version=${target}`, "-y"])
-            break
-          case "scoop":
-            upgradeResult = yield* run(["scoop", "install", `opencode@${target}`])
-            break
-          default:
-            return yield* new UpgradeFailedError({ stderr: `Unknown installation method: ${m}` })
-        }
-        if (!upgradeResult || upgradeResult.code !== 0) {
-          return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, upgradeResult) })
-        }
-        yield* Effect.logInfo("upgraded", {
-          method: m,
-          target,
-          stdout: upgradeResult.stdout,
-          stderr: upgradeResult.stderr,
+        // Scaffold fork — THE choke point for upgrades.
+        //
+        // The upstream upgrade path (curl/opencode.ai, npm/anomalyco packages,
+        // brew tap, choco, scoop) would REPLACE this Scaffold client with
+        // upstream OpenCode, so it is disabled here for every caller: the
+        // periodic auto-update (cli/upgrade.ts), `scaffold upgrade`, and the
+        // server's upgrade route used by the TUI update dialog. Scaffold
+        // updates ship from the Scaffold repository.
+        yield* Effect.logWarning("scaffold: upstream upgrade path disabled", { method: m, target })
+        return yield* new UpgradeFailedError({
+          stderr:
+            "Scaffold upgrades are disabled: this install is the Scaffold client, not upstream OpenCode. " +
+            "Update from the Scaffold repository (git pull in the Scaffold checkout) instead.",
         })
-        yield* text([process.execPath, "--version"])
       }),
     }
 

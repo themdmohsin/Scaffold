@@ -1,0 +1,8 @@
+Scaffold
+Copyright (c) 2026 the Scaffold authors
+
+The Scaffold client under opencode-plugin/opencode is a fork of OpenCode
+(https://github.com/anomalyco/opencode), Copyright (c) 2025 opencode, licensed
+under the MIT License. The original license text is retained unmodified at
+opencode-plugin/opencode/LICENSE and applies to all upstream-derived code.
+Scaffold-specific additions are provided under the same terms.

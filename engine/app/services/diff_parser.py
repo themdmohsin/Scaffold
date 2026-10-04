@@ -124,6 +124,22 @@ def _extract_deps(line: str, path: str) -> list[dict]:
     return []
 
 
+def extract_routes_from_text(text: str, path: str) -> list[dict]:
+    """Extract route registrations from a source-file body (added lines without
+    a diff). Used by POST /projects/:id/contracts/check so a write-time check
+    runs through the SAME deterministic regexes as the webhook parser — an LLM
+    never decides what a file declares (repo rule #2). Pure function.
+
+    Every line is treated as an added line; files where the route regexes do
+    not apply (JS/TS without Express-style calls, etc.) simply return [].
+    """
+    found: list[dict] = []
+    for line in text.splitlines():
+        found.extend(_extract_routes(line, path))
+    # Same dedupe as parse_diff (route+method+file identity).
+    return [dict(t) for t in {tuple(sorted(r.items())) for r in found}]
+
+
 def parse_diff(diff_text: str) -> DiffSummary:
     """Parse unified-diff text into a DiffSummary. Pure function."""
     summary = DiffSummary()

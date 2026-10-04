@@ -39,6 +39,7 @@ from app.db.models import ApiContract, Decision, EnvironmentVariable, Event, Pro
 from app.db.session import _init
 from app.routes.context import build_context
 from app.services import auth as auth_service
+from app.services import contract_check
 from app.services import coordination as coord
 from app.services import coordination_data as cdata
 from app.services import environment as environment_service
@@ -52,7 +53,9 @@ def _db():
 
 
 def _resolve_project_id(explicit: str | None) -> uuid.UUID:
-    raw = explicit or settings.scaffold_default_project_id
+    """Resolution order: explicit tool argument > `X-Scaffold-Project` header
+    (per-repo binding, set by the /mcp gate) > SCAFFOLD_DEFAULT_PROJECT_ID."""
+    raw = explicit or auth_service.current_mcp_project.get() or settings.scaffold_default_project_id
     if not raw:
         raise ValueError(
             "No project specified: pass project_id or set SCAFFOLD_DEFAULT_PROJECT_ID in engine/.env"
@@ -245,6 +248,34 @@ def create_task(
         )
         db.commit()
         return {"id": str(task.id), "title": task.title, "status": task.status}
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def check_api_contracts(
+    routes: list[str] | None = None,
+    file: str | None = None,
+    content: str | None = None,
+    project_id: str | None = None,
+) -> dict:
+    """Pre-write contract check (deterministic, read-only). Pass the routes you
+    are ABOUT to write as "METHOD /route" strings (e.g. "POST /api/auth/login");
+    the engine compares them with the project's registered contracts and
+    returns conflicts (blocking) + registered_matches (the registered shape).
+    Nothing is stored and `content`, if provided, is parsed transiently by the
+    same diff_parser regexes and never persisted. Use this BEFORE writing or
+    changing any HTTP endpoint."""
+    db = _db()
+    try:
+        pid, _ = _gate(db, project_id)
+        hints: list[dict] = []
+        for item in routes or []:
+            parts = str(item).strip().split(None, 1)
+            if len(parts) == 2 and parts[0] and parts[1]:
+                hints.append({"method": parts[0].upper(), "route": parts[1]})
+        incoming = contract_check.build_incoming(file=file, routes=hints, content=content)
+        return contract_check.run_check(db, pid, incoming)
     finally:
         db.close()
 
